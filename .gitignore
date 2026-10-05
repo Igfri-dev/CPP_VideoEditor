@@ -1,0 +1,76 @@
+# ====================================================================
+# Git Ignore for CPP_VideoEditor (C++17, Qt 6, CMake, FFmpeg)
+# ====================================================================
+
+# Build directories and CMake outputs
+build/
+bin/
+out/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+*.cmake
+!CMakeLists.txt
+!cmake/*.cmake
+
+# Qt generated files
+*.moc
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.qmlc
+*.jsc
+.qmake.stash
+
+# Object files and libraries
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.exp
+*.ilk
+*.pdb
+
+# Compiled binaries
+*.exe
+CPP_VideoEditor
+test_editor
+
+# Temporary files, scratch, and test outputs
+*.tmp
+*.temp
+*.log
+scratch/*
+!scratch/.gitkeep
+test_export_output*
+test_save_project.veproj
+
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# IDE & Editor configuration
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.user
+*.user.*
+*.suo
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user

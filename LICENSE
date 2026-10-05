@@ -1,0 +1,48 @@
+PROPRIETARY SOFTWARE LICENSE / LICENCIA DE SOFTWARE PROPIETARIO
+===================================================================
+Copyright (c) 2026 Igfri-dev. Todos los derechos reservados / All Rights Reserved.
+
+AVISO DE NO CÓDIGO ABIERTO (NOT OPEN SOURCE):
+Este repositorio y su código fuente son de acceso PÚBLICO únicamente con fines de
+lectura, referencia, demostración de portafolio y evaluación personal.
+ESTE SOFTWARE NO ES DE CÓDIGO ABIERTO (NON-OPEN SOURCE) y NO está sujeto a
+licencias como MIT, Apache, GPL, BSD ni ninguna otra licencia aprobada por la OSI
+(Open Source Initiative).
+
+-------------------------------------------------------------------
+TÉRMINOS Y CONDICIONES:
+
+1. DERECHOS CONCEDIDOS:
+   Se concede permiso a cualquier persona que visualice este repositorio de forma
+   gratuita para:
+   a) Clonar, descargar y compilar el código fuente en su equipo local exclusivamente
+      para fines personales, formativos, de estudio y de evaluación técnica.
+   b) Ejecutar la suite de pruebas y la aplicación en un entorno no comercial.
+
+2. RESTRICCIONES (PROHIBICIONES ESTRICTAS):
+   Queda expresamente prohibido, sin el consentimiento previo por escrito del titular
+   de los derechos de autor (Igfri-dev):
+   a) Redistribuir, revender, sublicenciar, alquilar o comercializar este software, su
+      código fuente o sus binarios compilados de forma total o parcial.
+   b) Utilizar este software o partes derivadas del mismo en productos comerciales,
+      servicios en la nube (SaaS), o proyectos que generen lucro directo o indirecto.
+   c) Publicar copias o bifurcaciones (forks) públicas con fines de apropiación de
+      autoría o sin preservar íntegramente este aviso de derechos de autor.
+   d) Eliminar, alterar u ocultar cualquier aviso de copyright o de propiedad contenido
+      en los archivos de este proyecto.
+
+3. DERECHOS RESERVADOS:
+   Todos los derechos, títulos e intereses sobre el software, incluyendo patentes,
+   marcas comerciales, derechos de autor y secretos comerciales, pertenecen de forma
+   exclusiva a Igfri-dev.
+
+4. EXENCIÓN DE GARANTÍA:
+   ESTE SOFTWARE SE ENTREGA "TAL CUAL" ("AS IS"), SIN GARANTÍA DE NINGÚN TIPO, EXPRESA
+   O IMPLÍCITA, INCLUYENDO PERO SIN LIMITARSE A LAS GARANTÍAS DE COMERCIABILIDAD,
+   ADECUACIÓN PARA UN PROPÓSITO PARTICULAR Y NO INFRACCIÓN. EN NINGÚN CASO EL AUTOR O
+   TITULAR DE LOS DERECHOS SERÁ RESPONSABLE DE NINGÚN RECLAMO, DAÑO O RESPONSABILIDAD
+   DERIVADA DEL USO O LA IMPOSIBILIDAD DE USO DE ESTE SOFTWARE.
+
+-------------------------------------------------------------------
+Para consultas sobre licenciamiento comercial o autorizaciones especiales,
+contactar al titular a través de su perfil en GitHub: https://github.com/Igfri-dev
