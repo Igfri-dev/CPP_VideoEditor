@@ -82,6 +82,8 @@ struct TimeOfDayUniforms {
     float contrast = 1.0f;
     float saturation = 1.0f;
     float shadowLift = 0.0f;
+    float midtoneGain = 1.0f;
+    float highlightGain = 1.0f;
     float highlightRolloff = 0.20f;
     float purkinjeStrength = 0.0f;
     float skyExposureDrop = 0.0f;
@@ -140,9 +142,19 @@ public:
     static const char* GetSimulatedTime(float sliderValue);
 
     /**
-     * @brief Generates an algorithmic 3D LUT (32x32x32) corresponding to a TimeProfile.
+     * @brief Generates an algorithmic 3D LUT corresponding to a TimeProfile.
      */
     static Lut3D GenerateProfileLut(const TimeProfile &profile, int size = 32);
+
+    /**
+     * @brief Retrieves a thread-safe cached 3D LUT for a given profile.
+     */
+    static Lut3D GetCachedProfileLut(const TimeProfile &profile, int size = 16);
+
+    /**
+     * @brief Returns the GLSL fragment shader source for TimeOfDay.frag.
+     */
+    static std::string GetFragmentShaderSource();
 
     /**
      * @brief Trilinear sampling of a 3D LUT.

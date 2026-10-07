@@ -1,5 +1,5 @@
 <RCC>
     <qresource prefix="/">
-        <!-- Place any icons or UI assets here -->
+        <file alias="shaders/TimeOfDay.frag">../src/filters/TimeOfDay.frag</file>
     </qresource>
 </RCC>

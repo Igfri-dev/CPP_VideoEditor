@@ -9,6 +9,7 @@ out vec4 FragColor;
 
 // Agnostic shader inputs
 uniform sampler2D u_texture;
+uniform sampler3D u_lutTexture;
 
 // Relighting uniforms
 uniform float u_exposureEV;
@@ -19,6 +20,8 @@ uniform vec3  u_highlightGains;
 uniform float u_contrast;
 uniform float u_saturation;
 uniform float u_shadowLift;
+uniform float u_midtoneGain;
+uniform float u_highlightGain;
 uniform float u_highlightRolloff;
 uniform float u_purkinjeStrength;
 uniform float u_skyExposureDrop;
@@ -123,9 +126,12 @@ void main()
     float mHighlight = smoothstep(0.45, 0.95, lumLinear);
     float mMidtone   = clamp(1.0 - mShadow - mHighlight, 0.0, 1.0);
 
+    float midGain = (u_midtoneGain > 0.001) ? u_midtoneGain : 1.0;
+    float hiGain  = (u_highlightGain > 0.001) ? u_highlightGain : 1.0;
+
     vec3 splitGains = u_shadowGains * (1.0 + u_shadowLift) * mShadow +
-                      u_midtoneGains * mMidtone +
-                      u_highlightGains * mHighlight;
+                      u_midtoneGains * midGain * mMidtone +
+                      u_highlightGains * hiGain * mHighlight;
 
     // Preserve natural skin tones against extreme split tinting
     splitGains = mix(splitGains, vec3(1.0), skinMask * 0.75);
@@ -158,7 +164,15 @@ void main()
     }
 
     // -------------------------------------------------------------------------
-    // 9. Filmic Tone Mapping with Smooth Highlight Rolloff
+    // 9. 3D LUT Photographic Film Look (sampler3D interpolation)
+    // -------------------------------------------------------------------------
+    if (u_lutStrength > 0.001) {
+        vec3 lutRgb = texture(u_lutTexture, clamp(linearColor, 0.0, 1.0)).rgb;
+        linearColor = mix(linearColor, lutRgb, u_lutStrength);
+    }
+
+    // -------------------------------------------------------------------------
+    // 10. Filmic Tone Mapping with Smooth Highlight Rolloff
     // -------------------------------------------------------------------------
     if (u_highlightRolloff > 0.001) {
         vec3 filmic = acesFilm(linearColor);
@@ -166,7 +180,7 @@ void main()
     }
 
     // -------------------------------------------------------------------------
-    // 10. Encode Linear Light back to sRGB / Rec.709 Output
+    // 11. Encode Linear Light back to sRGB / Rec.709 Output
     // -------------------------------------------------------------------------
     vec3 finalSrgb = linearToSrgb(linearColor);
     FragColor = vec4(finalSrgb, texColor.a);

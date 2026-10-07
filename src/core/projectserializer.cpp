@@ -91,6 +91,7 @@ ColorAdjustments ProjectSerializer::deserializeColorAdjustments(const QJsonObjec
     adj.luminosity = obj.value("luminosity").toInt(0);
     adj.red = obj.value("red").toInt(0);
     adj.green = obj.value("green").toInt(0);
+    adj.blue = obj.value("blue").toInt(0);
     adj.timeOfDayEnabled = obj.value("timeOfDayEnabled").toBool(false);
     float readTod = static_cast<float>(obj.value("timeOfDay").toDouble(0.60));
     // Backward compatibility: legacy Day default of 0.66 maps smoothly to new neutral Noon 0.60

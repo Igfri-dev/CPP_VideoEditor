@@ -2381,14 +2381,29 @@ void testTimeOfDayColorGrading()
     auto sampledLut = TimeOfDayFilter::SampleLutTrilinear(lut, 0.5f, 0.5f, 0.5f);
     assert(sampledLut[0] > 0.0f && sampledLut[1] > 0.0f && sampledLut[2] > 0.0f);
 
+    Lut3D cachedLut = TimeOfDayFilter::GetCachedProfileLut(TimeOfDayFilter::ProfileGoldenHour);
+    assert(cachedLut.isValid());
+    assert(cachedLut.size == 16);
+
+    // Dynamic fragment shader loader check (embedded Qt resource)
+    std::string fragSrc = TimeOfDayFilter::GetFragmentShaderSource();
+    assert(!fragSrc.empty());
+    assert(fragSrc.find("u_midtoneGain") != std::string::npos);
+    assert(fragSrc.find("u_highlightGain") != std::string::npos);
+    assert(fragSrc.find("u_lutTexture") != std::string::npos);
+
     // RenderTimelineSlice boundary and uniform dispatch checks
     TimeOfDayFilter filter;
     float capturedExposureEV = 0.0f;
     float capturedWB[3] = {0.0f, 0.0f, 0.0f};
+    float capturedMidtoneGain = 0.0f;
+    float capturedHighlightGain = 0.0f;
     unsigned int capturedTex = 0;
     filter.SetUniformSetters(
-        [&capturedExposureEV](const char *name, float val) {
+        [&capturedExposureEV, &capturedMidtoneGain, &capturedHighlightGain](const char *name, float val) {
             if (std::string(name) == "u_exposureEV") capturedExposureEV = val;
+            else if (std::string(name) == "u_midtoneGain") capturedMidtoneGain = val;
+            else if (std::string(name) == "u_highlightGain") capturedHighlightGain = val;
         },
         [&capturedWB](const char *name, float x, float y, float z) {
             if (std::string(name) == "u_whiteBalanceGains") {
@@ -2410,6 +2425,10 @@ void testTimeOfDayColorGrading()
     assert(capturedTex == 77);
     assert(filter.CurrentUniforms().textureId == 77);
     assert(std::abs(filter.CurrentUniforms().exposureEV - (-0.20f)) < 0.001f);
+    assert(filter.CurrentUniforms().midtoneGain > 0.0f);
+    assert(filter.CurrentUniforms().highlightGain > 0.0f);
+    assert(capturedMidtoneGain > 0.0f);
+    assert(capturedHighlightGain > 0.0f);
     std::cout << "  -> TimeOfDayFilter state profiles, interpolation & RenderTimelineSlice verified." << std::endl;
 
     // 2. ColorAdjustments Data Model & Identity checks
@@ -2547,6 +2566,15 @@ void testTimeOfDayColorGrading()
     ColorAdjustments deserializedAdj = ProjectSerializer::deserializeColorAdjustments(serializedAdj);
     assert(deserializedAdj.timeOfDayEnabled == true);
     assert(std::abs(deserializedAdj.timeOfDay - 1.00f) < 0.001f);
+
+    // Verify manual color channel adjustments (including adj.blue) roundtrip safely
+    ColorAdjustments blueAdj;
+    blueAdj.blue = 37;
+    QJsonObject blueObj = ProjectSerializer::serializeColorAdjustments(blueAdj);
+    assert(blueObj.contains("blue"));
+    assert(blueObj.value("blue").toInt() == 37);
+    ColorAdjustments blueDeserialized = ProjectSerializer::deserializeColorAdjustments(blueObj);
+    assert(blueDeserialized.blue == 37);
 
     // Backward compatibility: reading legacy 0.66 Day maps to 0.60 Noon
     QJsonObject legacyObj;
