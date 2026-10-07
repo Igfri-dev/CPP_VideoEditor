@@ -69,6 +69,33 @@ struct Lut3D {
     }
 };
 
+class QImage;
+
+/**
+ * @struct RelativeSettings
+ * @brief User-controllable modifiers and advanced biases for Relative Relighting.
+ */
+struct RelativeSettings {
+    float intensity = 1.0f;              ///< Relighting Strength [0.0, 1.0] (0 = original, 1 = full relighted)
+    float skinProtectionFactor = 1.0f;   ///< Multiplier for skin protection [0.0, 1.0]
+    float skyInfluenceFactor = 1.0f;     ///< Multiplier for sky exposure drop [0.0, 1.0]
+    float highlightWarmthBias = 0.0f;    ///< Highlight warmth bias [-1.0, 1.0]
+    float shadowCoolnessBias = 0.0f;     ///< Shadow coolness bias [-1.0, 1.0]
+    float exposureBias = 0.0f;           ///< Photometric exposure bias in EV [-2.0, 2.0]
+    float lutStrengthFactor = 1.0f;      ///< 3D LUT influence multiplier [0.0, 1.0]
+};
+
+/**
+ * @struct FrameAnalysisResult
+ * @brief Optical and colorimetric estimation of input video lighting.
+ */
+struct FrameAnalysisResult {
+    float estimatedTimeOfDay = 0.60f;    ///< Estimated source diurnal time [0.0, 1.0] (0.60 = neutral Noon)
+    float estimatedCCT = 6500.0f;        ///< Estimated Correlated Color Temperature in Kelvin
+    float meanLuminance = 0.25f;         ///< Estimated scene mean linear luminance
+    float confidence = 1.0f;             ///< Estimation confidence score [0.0, 1.0]
+};
+
 /**
  * @struct TimeOfDayUniforms
  * @brief Interpolated uniform parameters ready to be uploaded to the GPU fragment shader.
@@ -90,6 +117,8 @@ struct TimeOfDayUniforms {
     float skinProtection = 0.0f;
     float lutStrength = 0.0f;
     float timeOfDay = 0.60f;
+    float sourceTimeOfDay = 0.60f;
+    float intensity = 1.0f;
     unsigned int textureId = 0;
 };
 
@@ -108,6 +137,9 @@ struct TimeOfDayUniforms {
  */
 class TimeOfDayFilter {
 public:
+    using RelativeSettings = ::RelativeSettings;
+    using FrameAnalysisResult = ::FrameAnalysisResult;
+
     // Agnostic uniform callbacks
     using FloatUniformSetter = std::function<void(const char* name, float value)>;
     using Vec3UniformSetter = std::function<void(const char* name, float x, float y, float z)>;
@@ -122,6 +154,29 @@ public:
      * @return Interpolated TimeProfile with all relighting parameters.
      */
     static TimeProfile CalculateProfile(float sliderValue);
+
+    /**
+     * @brief Computes relative relighting delta profile between source lighting and target time.
+     * @param sourceTime Reference source time [0.0f, 1.0f] (0.60f = neutral Noon).
+     * @param targetTime Target time [0.0f, 1.0f].
+     * @param settings Advanced modifiers (intensity, biases, skin protection, etc.).
+     * @return Relative TimeProfile containing photometric and chromatic deltas.
+     */
+    static TimeProfile CalculateRelativeProfile(float sourceTime,
+                                                float targetTime,
+                                                const RelativeSettings &settings = RelativeSettings());
+
+    /**
+     * @brief Fast, deterministic analysis of input video frame to estimate source lighting.
+     * @param image Input frame.
+     * @return FrameAnalysisResult with estimated source time, CCT and luminance.
+     */
+    static FrameAnalysisResult AnalyzeFrame(const QImage &image);
+
+    /**
+     * @brief Convenience helper returning estimated source timeOfDay in [0.0f, 1.0f].
+     */
+    static float EstimateSourceTime(const QImage &image);
 
     /**
      * @brief Converts color temperature (Kelvin) and green-magenta tint into normalized RGB gains.
@@ -167,7 +222,19 @@ public:
     static bool LoadCubeFile(const std::string &filePath, Lut3D &outLut);
 
     /**
-     * @brief Renders a slice of timeline frames by calculating uniforms and triggering callbacks.
+     * @brief Renders a slice of timeline frames with relative relighting and uniform dispatch.
+     */
+    bool RenderTimelineSlice(int64_t currentFrame,
+                             int64_t startFrame,
+                             int64_t endFrame,
+                             float targetTime,
+                             float sourceTime,
+                             float intensity,
+                             unsigned int textureId,
+                             const RelativeSettings &settings = RelativeSettings());
+
+    /**
+     * @brief Backwards-compatible overload using neutral Noon as source and 100% intensity.
      */
     bool RenderTimelineSlice(int64_t currentFrame,
                              int64_t startFrame,

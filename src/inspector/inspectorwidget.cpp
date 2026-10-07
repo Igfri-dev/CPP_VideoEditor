@@ -230,6 +230,41 @@ static QWidget* createChannelRow(QWidget *parent, const QString &label, const QS
     return rowWidget;
 }
 
+static QWidget* createTodParamRow(QWidget *parent, const QString &label, const QString &colorAccent,
+                                 int minVal, int maxVal, int defaultVal,
+                                 QSlider *&slider, QLabel *&valLabel,
+                                 const QString &initialText)
+{
+    QWidget *rowWidget = new QWidget(parent);
+    QVBoxLayout *rowLayout = new QVBoxLayout(rowWidget);
+    rowLayout->setContentsMargins(0, 2, 0, 2);
+    rowLayout->setSpacing(2);
+
+    QHBoxLayout *hdr = new QHBoxLayout();
+    QLabel *lbl = new QLabel(label, rowWidget);
+    lbl->setStyleSheet("font-weight: bold; font-size: 10px; color: #8b949e;");
+    hdr->addWidget(lbl);
+    hdr->addStretch();
+
+    valLabel = new QLabel(initialText, rowWidget);
+    valLabel->setStyleSheet(QString("color: %1; font-weight: bold; font-size: 10px;").arg(colorAccent));
+    hdr->addWidget(valLabel);
+    rowLayout->addLayout(hdr);
+
+    slider = new QSlider(Qt::Horizontal, rowWidget);
+    slider->setRange(minVal, maxVal);
+    slider->setValue(defaultVal);
+    slider->setStyleSheet(QString(
+        "QSlider::groove:horizontal { height: 4px; background: #21262d; border-radius: 2px; }"
+        "QSlider::sub-page:horizontal { background: %1; border-radius: 2px; }"
+        "QSlider::handle:horizontal { background: #f0f6fc; border: 1px solid #30363d; width: 10px; margin-top: -3px; margin-bottom: -3px; border-radius: 5px; }"
+        "QSlider::handle:horizontal:hover { background: %1; }"
+    ).arg(colorAccent));
+    rowLayout->addWidget(slider);
+
+    return rowWidget;
+}
+
 InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
     : QWidget(qobject_cast<QWidget*>(parent))
     , m_model(model)
@@ -1045,8 +1080,8 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
 
     layout->addWidget(m_clipColorSection);
 
-    // Clip Time of Day Section (Interactive Day-to-Night Grading)
-    m_clipTimeOfDayGroup = new QGroupBox("☀️ Hora del Día (Time of Day)", m_contentContainer);
+    // Clip Time of Day Section (Interactive Day-to-Night Relighting)
+    m_clipTimeOfDayGroup = new QGroupBox("☀️ Iluminación por Hora del Día (Time of Day)", m_contentContainer);
     m_clipTimeOfDayGroup->setStyleSheet(
         "QGroupBox { color: #f0883e; font-weight: bold; border: 1px solid #30363d; border-radius: 4px; margin-top: 8px; padding-top: 10px; }"
         "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
@@ -1055,16 +1090,45 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
     todLayout->setSpacing(6);
 
     QHBoxLayout *todTopRow = new QHBoxLayout();
-    m_clipTimeOfDayCheck = new QCheckBox("Activar Efecto Hora del Día", m_clipTimeOfDayGroup);
+    m_clipTimeOfDayCheck = new QCheckBox("Activar Relighting Natural", m_clipTimeOfDayGroup);
     m_clipTimeOfDayCheck->setStyleSheet("QCheckBox { color: #c9d1d9; font-weight: bold; font-size: 11px; }");
     connect(m_clipTimeOfDayCheck, &QCheckBox::toggled, this, &InspectorWidget::onClipTimeOfDayToggled);
     todTopRow->addWidget(m_clipTimeOfDayCheck);
     todTopRow->addStretch();
 
-    m_clipTimeOfDayBadge = new QLabel("☀️ Día (0.66)", m_clipTimeOfDayGroup);
+    m_clipTimeOfDayBadge = new QLabel("☀️ Día (0.60)", m_clipTimeOfDayGroup);
     m_clipTimeOfDayBadge->setAlignment(Qt::AlignCenter);
     todTopRow->addWidget(m_clipTimeOfDayBadge);
     todLayout->addLayout(todTopRow);
+
+    // 1. Source Lighting Row (Auto analysis or reference time)
+    QHBoxLayout *sourceRow = new QHBoxLayout();
+    sourceRow->setSpacing(6);
+    QLabel *sourceLabel = new QLabel("Iluminación Origen:", m_clipTimeOfDayGroup);
+    sourceLabel->setStyleSheet("color: #8b949e; font-size: 11px; font-weight: bold;");
+    sourceRow->addWidget(sourceLabel);
+
+    m_clipTodSourceCombo = new QComboBox(m_clipTimeOfDayGroup);
+    m_clipTodSourceCombo->setStyleSheet(
+        "QComboBox { background-color: #161b22; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 3px 6px; font-size: 11px; }"
+        "QComboBox::drop-down { border: none; }"
+        "QComboBox QAbstractItemView { background-color: #161b22; color: #c9d1d9; selection-background-color: #1f6feb; border: 1px solid #30363d; }"
+    );
+    m_clipTodSourceCombo->addItem("🔍 Auto (Detección de iluminación)", QVariant(-1.0f));
+    m_clipTodSourceCombo->addItem("☀️ Mediodía Neutro (12:00, 6500K D65)", QVariant(0.60f));
+    m_clipTodSourceCombo->addItem("✨ Golden Hour (18:30, 3800K)", QVariant(0.82f));
+    m_clipTodSourceCombo->addItem("🌇 Atardecer (20:15, 3000K)", QVariant(1.00f));
+    m_clipTodSourceCombo->addItem("🌅 Mañana (09:00, 5800K)", QVariant(0.42f));
+    m_clipTodSourceCombo->addItem("🌌 Blue Hour (05:30, 9200K)", QVariant(0.15f));
+    m_clipTodSourceCombo->addItem("🌙 Noche (00:00, Scotopic Blue)", QVariant(0.00f));
+    connect(m_clipTodSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &InspectorWidget::onClipTimeOfDaySourceChanged);
+    sourceRow->addWidget(m_clipTodSourceCombo, 1);
+    todLayout->addLayout(sourceRow);
+
+    // 2. Target Time Row and Slider
+    QLabel *targetLabel = new QLabel("Hora Objetivo (Target Time):", m_clipTimeOfDayGroup);
+    targetLabel->setStyleSheet("color: #8b949e; font-size: 11px; font-weight: bold;");
+    todLayout->addWidget(targetLabel);
 
     m_clipTimeOfDaySlider = new QSlider(Qt::Horizontal, m_clipTimeOfDayGroup);
     m_clipTimeOfDaySlider->setRange(0, 100);
@@ -1138,6 +1202,99 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
     todPresetsRow->addWidget(m_clipPresetGoldenBtn);
     todPresetsRow->addWidget(m_clipPresetSunsetBtn);
     todLayout->addLayout(todPresetsRow);
+
+    // 3. Relighting Strength / Intensity Slider
+    QHBoxLayout *intensityRow = new QHBoxLayout();
+    QLabel *intensityTitle = new QLabel("Intensidad (Strength):", m_clipTimeOfDayGroup);
+    intensityTitle->setStyleSheet("color: #8b949e; font-size: 11px; font-weight: bold;");
+    intensityRow->addWidget(intensityTitle);
+    intensityRow->addStretch();
+    m_clipTodIntensityLabel = new QLabel("100%", m_clipTimeOfDayGroup);
+    m_clipTodIntensityLabel->setStyleSheet("color: #58a6ff; font-weight: bold; font-size: 11px;");
+    intensityRow->addWidget(m_clipTodIntensityLabel);
+    todLayout->addLayout(intensityRow);
+
+    m_clipTodIntensitySlider = new QSlider(Qt::Horizontal, m_clipTimeOfDayGroup);
+    m_clipTodIntensitySlider->setRange(0, 100);
+    m_clipTodIntensitySlider->setValue(100);
+    m_clipTodIntensitySlider->setStyleSheet(
+        "QSlider::groove:horizontal { height: 4px; background: #21262d; border-radius: 2px; }"
+        "QSlider::sub-page:horizontal { background: #388bfd; border-radius: 2px; }"
+        "QSlider::handle:horizontal { background: #f0f6fc; border: 1px solid #30363d; width: 12px; margin-top: -4px; margin-bottom: -4px; border-radius: 6px; }"
+        "QSlider::handle:horizontal:hover { background: #58a6ff; }"
+    );
+    connect(m_clipTodIntensitySlider, &QSlider::valueChanged, this, &InspectorWidget::onClipTimeOfDayIntensityChanged);
+    connect(m_clipTodIntensitySlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar intensidad hora del día de clip");
+    });
+    todLayout->addWidget(m_clipTodIntensitySlider);
+
+    // 4. Collapsible Advanced Panel
+    m_clipTodAdvancedToggleBtn = new QPushButton("⚙️ Ajustes Avanzados ▸", m_clipTimeOfDayGroup);
+    m_clipTodAdvancedToggleBtn->setCheckable(true);
+    m_clipTodAdvancedToggleBtn->setChecked(false);
+    m_clipTodAdvancedToggleBtn->setCursor(Qt::PointingHandCursor);
+    m_clipTodAdvancedToggleBtn->setStyleSheet(
+        "QPushButton { background-color: #161b22; color: #8b949e; border: 1px solid #30363d; border-radius: 3px; padding: 4px 6px; font-size: 11px; font-weight: bold; text-align: left; }"
+        "QPushButton:hover { background-color: #21262d; color: #c9d1d9; }"
+        "QPushButton:checked { background-color: #21262d; color: #58a6ff; border-color: #58a6ff; }"
+    );
+    connect(m_clipTodAdvancedToggleBtn, &QPushButton::toggled, this, &InspectorWidget::onClipTimeOfDayAdvancedToggled);
+    todLayout->addWidget(m_clipTodAdvancedToggleBtn);
+
+    m_clipTodAdvancedContainer = new QWidget(m_clipTimeOfDayGroup);
+    m_clipTodAdvancedContainer->setVisible(false);
+    QVBoxLayout *advLayout = new QVBoxLayout(m_clipTodAdvancedContainer);
+    advLayout->setContentsMargins(6, 4, 6, 4);
+    advLayout->setSpacing(6);
+    m_clipTodAdvancedContainer->setStyleSheet("background-color: #0d1117; border: 1px solid #21262d; border-radius: 4px;");
+
+    advLayout->addWidget(createTodParamRow(m_clipTodAdvancedContainer, "🛡️ Protección de Piel:", "#79c0ff", 0, 100, 100, m_clipTodSkinProtectionSlider, m_clipTodSkinProtectionLabel, "100%"));
+    connect(m_clipTodSkinProtectionSlider, &QSlider::valueChanged, this, &InspectorWidget::onClipTimeOfDaySkinProtectionChanged);
+    connect(m_clipTodSkinProtectionSlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar protección de piel de clip");
+    });
+
+    advLayout->addWidget(createTodParamRow(m_clipTodAdvancedContainer, "☁️ Influencia en Cielo:", "#a5d6ff", 0, 100, 100, m_clipTodSkyInfluenceSlider, m_clipTodSkyInfluenceLabel, "100%"));
+    connect(m_clipTodSkyInfluenceSlider, &QSlider::valueChanged, this, &InspectorWidget::onClipTimeOfDaySkyInfluenceChanged);
+    connect(m_clipTodSkyInfluenceSlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar influencia en cielo de clip");
+    });
+
+    advLayout->addWidget(createTodParamRow(m_clipTodAdvancedContainer, "🔥 Calidez en Luces:", "#ffa657", -100, 100, 0, m_clipTodHighlightWarmthSlider, m_clipTodHighlightWarmthLabel, "0%"));
+    connect(m_clipTodHighlightWarmthSlider, &QSlider::valueChanged, this, &InspectorWidget::onClipTimeOfDayHighlightWarmthChanged);
+    connect(m_clipTodHighlightWarmthSlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar calidez en luces de clip");
+    });
+
+    advLayout->addWidget(createTodParamRow(m_clipTodAdvancedContainer, "❄️ Frialdad en Sombras:", "#7ee787", -100, 100, 0, m_clipTodShadowCoolnessSlider, m_clipTodShadowCoolnessLabel, "0%"));
+    connect(m_clipTodShadowCoolnessSlider, &QSlider::valueChanged, this, &InspectorWidget::onClipTimeOfDayShadowCoolnessChanged);
+    connect(m_clipTodShadowCoolnessSlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar frialdad en sombras de clip");
+    });
+
+    advLayout->addWidget(createTodParamRow(m_clipTodAdvancedContainer, "☀️ Compensación Exposición:", "#f2cc60", -20, 20, 0, m_clipTodExposureBiasSlider, m_clipTodExposureBiasLabel, "+0.0 EV"));
+    connect(m_clipTodExposureBiasSlider, &QSlider::valueChanged, this, &InspectorWidget::onClipTimeOfDayExposureBiasChanged);
+    connect(m_clipTodExposureBiasSlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar compensación exposición de clip");
+    });
+
+    advLayout->addWidget(createTodParamRow(m_clipTodAdvancedContainer, "🎞️ Intensidad de Look LUT:", "#d2a8ff", 0, 100, 100, m_clipTodLutStrengthSlider, m_clipTodLutStrengthLabel, "100%"));
+    connect(m_clipTodLutStrengthSlider, &QSlider::valueChanged, this, &InspectorWidget::onClipTimeOfDayLutStrengthChanged);
+    connect(m_clipTodLutStrengthSlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar intensidad LUT de clip");
+    });
+
+    m_clipTodResetAdvancedBtn = new QPushButton("↺ Restablecer Ajustes Avanzados", m_clipTodAdvancedContainer);
+    m_clipTodResetAdvancedBtn->setCursor(Qt::PointingHandCursor);
+    m_clipTodResetAdvancedBtn->setStyleSheet(
+        "QPushButton { background-color: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 3px 6px; font-size: 10px; font-weight: bold; }"
+        "QPushButton:hover { background-color: #30363d; color: white; }"
+    );
+    connect(m_clipTodResetAdvancedBtn, &QPushButton::clicked, this, &InspectorWidget::onClipTimeOfDayResetAdvancedClicked);
+    advLayout->addWidget(m_clipTodResetAdvancedBtn);
+
+    todLayout->addWidget(m_clipTodAdvancedContainer);
 
     updateTimeOfDayBadge(m_clipTimeOfDayBadge, 0.60f);
     layout->addWidget(m_clipTimeOfDayGroup);
@@ -1547,8 +1704,8 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
 
     gLayout->addWidget(gColorGroup);
 
-    // Global Time of Day Section (Interactive Day-to-Night Grading Master)
-    m_globalTimeOfDayGroup = new QGroupBox("☀️ Hora del Día Global (Master)", m_globalContainer);
+    // Global Time of Day Section (Interactive Day-to-Night Relighting Master)
+    m_globalTimeOfDayGroup = new QGroupBox("☀️ Iluminación por Hora del Día Global (Master)", m_globalContainer);
     m_globalTimeOfDayGroup->setStyleSheet(
         "QGroupBox { color: #f0883e; font-weight: bold; border: 1px solid #30363d; border-radius: 4px; margin-top: 8px; padding-top: 10px; }"
         "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
@@ -1557,16 +1714,45 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
     gTodLayout->setSpacing(6);
 
     QHBoxLayout *gTodTopRow = new QHBoxLayout();
-    m_globalTimeOfDayCheck = new QCheckBox("Activar Efecto Hora del Día Master", m_globalTimeOfDayGroup);
+    m_globalTimeOfDayCheck = new QCheckBox("Activar Relighting Natural Master", m_globalTimeOfDayGroup);
     m_globalTimeOfDayCheck->setStyleSheet("QCheckBox { color: #c9d1d9; font-weight: bold; font-size: 11px; }");
     connect(m_globalTimeOfDayCheck, &QCheckBox::toggled, this, &InspectorWidget::onGlobalTimeOfDayToggled);
     gTodTopRow->addWidget(m_globalTimeOfDayCheck);
     gTodTopRow->addStretch();
 
-    m_globalTimeOfDayBadge = new QLabel("☀️ Día (0.66)", m_globalTimeOfDayGroup);
+    m_globalTimeOfDayBadge = new QLabel("☀️ Día (0.60)", m_globalTimeOfDayGroup);
     m_globalTimeOfDayBadge->setAlignment(Qt::AlignCenter);
     gTodTopRow->addWidget(m_globalTimeOfDayBadge);
     gTodLayout->addLayout(gTodTopRow);
+
+    // 1. Source Lighting Row
+    QHBoxLayout *gSourceRow = new QHBoxLayout();
+    gSourceRow->setSpacing(6);
+    QLabel *gSourceLabel = new QLabel("Iluminación Origen:", m_globalTimeOfDayGroup);
+    gSourceLabel->setStyleSheet("color: #8b949e; font-size: 11px; font-weight: bold;");
+    gSourceRow->addWidget(gSourceLabel);
+
+    m_globalTodSourceCombo = new QComboBox(m_globalTimeOfDayGroup);
+    m_globalTodSourceCombo->setStyleSheet(
+        "QComboBox { background-color: #161b22; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 3px 6px; font-size: 11px; }"
+        "QComboBox::drop-down { border: none; }"
+        "QComboBox QAbstractItemView { background-color: #161b22; color: #c9d1d9; selection-background-color: #1f6feb; border: 1px solid #30363d; }"
+    );
+    m_globalTodSourceCombo->addItem("🔍 Auto (Detección de iluminación)", QVariant(-1.0f));
+    m_globalTodSourceCombo->addItem("☀️ Mediodía Neutro (12:00, 6500K D65)", QVariant(0.60f));
+    m_globalTodSourceCombo->addItem("✨ Golden Hour (18:30, 3800K)", QVariant(0.82f));
+    m_globalTodSourceCombo->addItem("🌇 Atardecer (20:15, 3000K)", QVariant(1.00f));
+    m_globalTodSourceCombo->addItem("🌅 Mañana (09:00, 5800K)", QVariant(0.42f));
+    m_globalTodSourceCombo->addItem("🌌 Blue Hour (05:30, 9200K)", QVariant(0.15f));
+    m_globalTodSourceCombo->addItem("🌙 Noche (00:00, Scotopic Blue)", QVariant(0.00f));
+    connect(m_globalTodSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &InspectorWidget::onGlobalTimeOfDaySourceChanged);
+    gSourceRow->addWidget(m_globalTodSourceCombo, 1);
+    gTodLayout->addLayout(gSourceRow);
+
+    // 2. Target Time Row and Slider
+    QLabel *gTargetLabel = new QLabel("Hora Objetivo (Target Time):", m_globalTimeOfDayGroup);
+    gTargetLabel->setStyleSheet("color: #8b949e; font-size: 11px; font-weight: bold;");
+    gTodLayout->addWidget(gTargetLabel);
 
     m_globalTimeOfDaySlider = new QSlider(Qt::Horizontal, m_globalTimeOfDayGroup);
     m_globalTimeOfDaySlider->setRange(0, 100);
@@ -1640,6 +1826,99 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
     gTodPresetsRow->addWidget(m_globalPresetGoldenBtn);
     gTodPresetsRow->addWidget(m_globalPresetSunsetBtn);
     gTodLayout->addLayout(gTodPresetsRow);
+
+    // 3. Relighting Strength / Intensity Slider
+    QHBoxLayout *gIntensityRow = new QHBoxLayout();
+    QLabel *gIntensityTitle = new QLabel("Intensidad (Strength):", m_globalTimeOfDayGroup);
+    gIntensityTitle->setStyleSheet("color: #8b949e; font-size: 11px; font-weight: bold;");
+    gIntensityRow->addWidget(gIntensityTitle);
+    gIntensityRow->addStretch();
+    m_globalTodIntensityLabel = new QLabel("100%", m_globalTimeOfDayGroup);
+    m_globalTodIntensityLabel->setStyleSheet("color: #58a6ff; font-weight: bold; font-size: 11px;");
+    gIntensityRow->addWidget(m_globalTodIntensityLabel);
+    gTodLayout->addLayout(gIntensityRow);
+
+    m_globalTodIntensitySlider = new QSlider(Qt::Horizontal, m_globalTimeOfDayGroup);
+    m_globalTodIntensitySlider->setRange(0, 100);
+    m_globalTodIntensitySlider->setValue(100);
+    m_globalTodIntensitySlider->setStyleSheet(
+        "QSlider::groove:horizontal { height: 4px; background: #21262d; border-radius: 2px; }"
+        "QSlider::sub-page:horizontal { background: #388bfd; border-radius: 2px; }"
+        "QSlider::handle:horizontal { background: #f0f6fc; border: 1px solid #30363d; width: 12px; margin-top: -4px; margin-bottom: -4px; border-radius: 6px; }"
+        "QSlider::handle:horizontal:hover { background: #58a6ff; }"
+    );
+    connect(m_globalTodIntensitySlider, &QSlider::valueChanged, this, &InspectorWidget::onGlobalTimeOfDayIntensityChanged);
+    connect(m_globalTodIntensitySlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar intensidad hora del día general");
+    });
+    gTodLayout->addWidget(m_globalTodIntensitySlider);
+
+    // 4. Collapsible Advanced Panel
+    m_globalTodAdvancedToggleBtn = new QPushButton("⚙️ Ajustes Avanzados ▸", m_globalTimeOfDayGroup);
+    m_globalTodAdvancedToggleBtn->setCheckable(true);
+    m_globalTodAdvancedToggleBtn->setChecked(false);
+    m_globalTodAdvancedToggleBtn->setCursor(Qt::PointingHandCursor);
+    m_globalTodAdvancedToggleBtn->setStyleSheet(
+        "QPushButton { background-color: #161b22; color: #8b949e; border: 1px solid #30363d; border-radius: 3px; padding: 4px 6px; font-size: 11px; font-weight: bold; text-align: left; }"
+        "QPushButton:hover { background-color: #21262d; color: #c9d1d9; }"
+        "QPushButton:checked { background-color: #21262d; color: #58a6ff; border-color: #58a6ff; }"
+    );
+    connect(m_globalTodAdvancedToggleBtn, &QPushButton::toggled, this, &InspectorWidget::onGlobalTimeOfDayAdvancedToggled);
+    gTodLayout->addWidget(m_globalTodAdvancedToggleBtn);
+
+    m_globalTodAdvancedContainer = new QWidget(m_globalTimeOfDayGroup);
+    m_globalTodAdvancedContainer->setVisible(false);
+    QVBoxLayout *gAdvLayout = new QVBoxLayout(m_globalTodAdvancedContainer);
+    gAdvLayout->setContentsMargins(6, 4, 6, 4);
+    gAdvLayout->setSpacing(6);
+    m_globalTodAdvancedContainer->setStyleSheet("background-color: #0d1117; border: 1px solid #21262d; border-radius: 4px;");
+
+    gAdvLayout->addWidget(createTodParamRow(m_globalTodAdvancedContainer, "🛡️ Protección de Piel:", "#79c0ff", 0, 100, 100, m_globalTodSkinProtectionSlider, m_globalTodSkinProtectionLabel, "100%"));
+    connect(m_globalTodSkinProtectionSlider, &QSlider::valueChanged, this, &InspectorWidget::onGlobalTimeOfDaySkinProtectionChanged);
+    connect(m_globalTodSkinProtectionSlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar protección de piel general");
+    });
+
+    gAdvLayout->addWidget(createTodParamRow(m_globalTodAdvancedContainer, "☁️ Influencia en Cielo:", "#a5d6ff", 0, 100, 100, m_globalTodSkyInfluenceSlider, m_globalTodSkyInfluenceLabel, "100%"));
+    connect(m_globalTodSkyInfluenceSlider, &QSlider::valueChanged, this, &InspectorWidget::onGlobalTimeOfDaySkyInfluenceChanged);
+    connect(m_globalTodSkyInfluenceSlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar influencia en cielo general");
+    });
+
+    gAdvLayout->addWidget(createTodParamRow(m_globalTodAdvancedContainer, "🔥 Calidez en Luces:", "#ffa657", -100, 100, 0, m_globalTodHighlightWarmthSlider, m_globalTodHighlightWarmthLabel, "0%"));
+    connect(m_globalTodHighlightWarmthSlider, &QSlider::valueChanged, this, &InspectorWidget::onGlobalTimeOfDayHighlightWarmthChanged);
+    connect(m_globalTodHighlightWarmthSlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar calidez en luces general");
+    });
+
+    gAdvLayout->addWidget(createTodParamRow(m_globalTodAdvancedContainer, "❄️ Frialdad en Sombras:", "#7ee787", -100, 100, 0, m_globalTodShadowCoolnessSlider, m_globalTodShadowCoolnessLabel, "0%"));
+    connect(m_globalTodShadowCoolnessSlider, &QSlider::valueChanged, this, &InspectorWidget::onGlobalTimeOfDayShadowCoolnessChanged);
+    connect(m_globalTodShadowCoolnessSlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar frialdad en sombras general");
+    });
+
+    gAdvLayout->addWidget(createTodParamRow(m_globalTodAdvancedContainer, "☀️ Compensación Exposición:", "#f2cc60", -20, 20, 0, m_globalTodExposureBiasSlider, m_globalTodExposureBiasLabel, "+0.0 EV"));
+    connect(m_globalTodExposureBiasSlider, &QSlider::valueChanged, this, &InspectorWidget::onGlobalTimeOfDayExposureBiasChanged);
+    connect(m_globalTodExposureBiasSlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar compensación exposición general");
+    });
+
+    gAdvLayout->addWidget(createTodParamRow(m_globalTodAdvancedContainer, "🎞️ Intensidad de Look LUT:", "#d2a8ff", 0, 100, 100, m_globalTodLutStrengthSlider, m_globalTodLutStrengthLabel, "100%"));
+    connect(m_globalTodLutStrengthSlider, &QSlider::valueChanged, this, &InspectorWidget::onGlobalTimeOfDayLutStrengthChanged);
+    connect(m_globalTodLutStrengthSlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar intensidad LUT general");
+    });
+
+    m_globalTodResetAdvancedBtn = new QPushButton("↺ Restablecer Ajustes Avanzados", m_globalTodAdvancedContainer);
+    m_globalTodResetAdvancedBtn->setCursor(Qt::PointingHandCursor);
+    m_globalTodResetAdvancedBtn->setStyleSheet(
+        "QPushButton { background-color: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 3px 6px; font-size: 10px; font-weight: bold; }"
+        "QPushButton:hover { background-color: #30363d; color: white; }"
+    );
+    connect(m_globalTodResetAdvancedBtn, &QPushButton::clicked, this, &InspectorWidget::onGlobalTimeOfDayResetAdvancedClicked);
+    gAdvLayout->addWidget(m_globalTodResetAdvancedBtn);
+
+    gTodLayout->addWidget(m_globalTodAdvancedContainer);
 
     updateTimeOfDayBadge(m_globalTimeOfDayBadge, 0.60f);
     gLayout->addWidget(m_globalTimeOfDayGroup);
@@ -2147,11 +2426,87 @@ void InspectorWidget::refreshUi()
             m_clipTimeOfDayCheck->setChecked(adj.timeOfDayEnabled);
             m_clipTimeOfDayCheck->blockSignals(false);
 
+            if (m_clipTodSourceCombo) {
+                m_clipTodSourceCombo->blockSignals(true);
+                if (adj.timeOfDaySourceMode == TimeOfDaySourceMode::Auto) {
+                    m_clipTodSourceCombo->setCurrentIndex(0);
+                } else {
+                    int bestIdx = 1;
+                    float bestDiff = 999.0f;
+                    for (int i = 1; i < m_clipTodSourceCombo->count(); ++i) {
+                        float v = m_clipTodSourceCombo->itemData(i).toFloat();
+                        float diff = std::abs(v - adj.timeOfDaySourceTime);
+                        if (diff < bestDiff) {
+                            bestDiff = diff;
+                            bestIdx = i;
+                        }
+                    }
+                    m_clipTodSourceCombo->setCurrentIndex(bestIdx);
+                }
+                m_clipTodSourceCombo->blockSignals(false);
+            }
+
             m_clipTimeOfDaySlider->blockSignals(true);
             m_clipTimeOfDaySlider->setValue(qRound(adj.timeOfDay * 100.0f));
             m_clipTimeOfDaySlider->blockSignals(false);
 
             updateTimeOfDayBadge(m_clipTimeOfDayBadge, adj.timeOfDay);
+
+            if (m_clipTodIntensitySlider) {
+                m_clipTodIntensitySlider->blockSignals(true);
+                int intVal = qBound(0, qRound(adj.timeOfDayIntensity * 100.0f), 100);
+                m_clipTodIntensitySlider->setValue(intVal);
+                if (m_clipTodIntensityLabel) m_clipTodIntensityLabel->setText(QString("%1%").arg(intVal));
+                m_clipTodIntensitySlider->blockSignals(false);
+            }
+
+            if (m_clipTodSkinProtectionSlider) {
+                m_clipTodSkinProtectionSlider->blockSignals(true);
+                int skinVal = qBound(0, qRound(adj.timeOfDaySkinProtection * 100.0f), 100);
+                m_clipTodSkinProtectionSlider->setValue(skinVal);
+                if (m_clipTodSkinProtectionLabel) m_clipTodSkinProtectionLabel->setText(QString("%1%").arg(skinVal));
+                m_clipTodSkinProtectionSlider->blockSignals(false);
+            }
+
+            if (m_clipTodSkyInfluenceSlider) {
+                m_clipTodSkyInfluenceSlider->blockSignals(true);
+                int skyVal = qBound(0, qRound(adj.timeOfDaySkyInfluence * 100.0f), 100);
+                m_clipTodSkyInfluenceSlider->setValue(skyVal);
+                if (m_clipTodSkyInfluenceLabel) m_clipTodSkyInfluenceLabel->setText(QString("%1%").arg(skyVal));
+                m_clipTodSkyInfluenceSlider->blockSignals(false);
+            }
+
+            if (m_clipTodHighlightWarmthSlider) {
+                m_clipTodHighlightWarmthSlider->blockSignals(true);
+                int hwVal = qBound(-100, qRound(adj.timeOfDayHighlightWarmth * 100.0f), 100);
+                m_clipTodHighlightWarmthSlider->setValue(hwVal);
+                if (m_clipTodHighlightWarmthLabel) m_clipTodHighlightWarmthLabel->setText(QString("%1%2%").arg(hwVal > 0 ? "+" : "").arg(hwVal));
+                m_clipTodHighlightWarmthSlider->blockSignals(false);
+            }
+
+            if (m_clipTodShadowCoolnessSlider) {
+                m_clipTodShadowCoolnessSlider->blockSignals(true);
+                int scVal = qBound(-100, qRound(adj.timeOfDayShadowCoolness * 100.0f), 100);
+                m_clipTodShadowCoolnessSlider->setValue(scVal);
+                if (m_clipTodShadowCoolnessLabel) m_clipTodShadowCoolnessLabel->setText(QString("%1%2%").arg(scVal > 0 ? "+" : "").arg(scVal));
+                m_clipTodShadowCoolnessSlider->blockSignals(false);
+            }
+
+            if (m_clipTodExposureBiasSlider) {
+                m_clipTodExposureBiasSlider->blockSignals(true);
+                int expVal = qBound(-20, qRound(adj.timeOfDayExposureBias * 10.0f), 20);
+                m_clipTodExposureBiasSlider->setValue(expVal);
+                if (m_clipTodExposureBiasLabel) m_clipTodExposureBiasLabel->setText(QString("%1%2 EV").arg(expVal > 0 ? "+" : "").arg(expVal / 10.0, 0, 'f', 1));
+                m_clipTodExposureBiasSlider->blockSignals(false);
+            }
+
+            if (m_clipTodLutStrengthSlider) {
+                m_clipTodLutStrengthSlider->blockSignals(true);
+                int lutVal = qBound(0, qRound(adj.timeOfDayLutStrength * 100.0f), 100);
+                m_clipTodLutStrengthSlider->setValue(lutVal);
+                if (m_clipTodLutStrengthLabel) m_clipTodLutStrengthLabel->setText(QString("%1%").arg(lutVal));
+                m_clipTodLutStrengthSlider->blockSignals(false);
+            }
         }
     } else {
         m_videoSection->hide();
@@ -3076,11 +3431,87 @@ void InspectorWidget::updateGlobalPropertiesUi()
         m_globalTimeOfDayCheck->setChecked(adj.timeOfDayEnabled);
         m_globalTimeOfDayCheck->blockSignals(false);
 
+        if (m_globalTodSourceCombo) {
+            m_globalTodSourceCombo->blockSignals(true);
+            if (adj.timeOfDaySourceMode == TimeOfDaySourceMode::Auto) {
+                m_globalTodSourceCombo->setCurrentIndex(0);
+            } else {
+                int bestIdx = 1;
+                float bestDiff = 999.0f;
+                for (int i = 1; i < m_globalTodSourceCombo->count(); ++i) {
+                    float v = m_globalTodSourceCombo->itemData(i).toFloat();
+                    float diff = std::abs(v - adj.timeOfDaySourceTime);
+                    if (diff < bestDiff) {
+                        bestDiff = diff;
+                        bestIdx = i;
+                    }
+                }
+                m_globalTodSourceCombo->setCurrentIndex(bestIdx);
+            }
+            m_globalTodSourceCombo->blockSignals(false);
+        }
+
         m_globalTimeOfDaySlider->blockSignals(true);
         m_globalTimeOfDaySlider->setValue(qRound(adj.timeOfDay * 100.0f));
         m_globalTimeOfDaySlider->blockSignals(false);
 
         updateTimeOfDayBadge(m_globalTimeOfDayBadge, adj.timeOfDay);
+
+        if (m_globalTodIntensitySlider) {
+            m_globalTodIntensitySlider->blockSignals(true);
+            int intVal = qBound(0, qRound(adj.timeOfDayIntensity * 100.0f), 100);
+            m_globalTodIntensitySlider->setValue(intVal);
+            if (m_globalTodIntensityLabel) m_globalTodIntensityLabel->setText(QString("%1%").arg(intVal));
+            m_globalTodIntensitySlider->blockSignals(false);
+        }
+
+        if (m_globalTodSkinProtectionSlider) {
+            m_globalTodSkinProtectionSlider->blockSignals(true);
+            int skinVal = qBound(0, qRound(adj.timeOfDaySkinProtection * 100.0f), 100);
+            m_globalTodSkinProtectionSlider->setValue(skinVal);
+            if (m_globalTodSkinProtectionLabel) m_globalTodSkinProtectionLabel->setText(QString("%1%").arg(skinVal));
+            m_globalTodSkinProtectionSlider->blockSignals(false);
+        }
+
+        if (m_globalTodSkyInfluenceSlider) {
+            m_globalTodSkyInfluenceSlider->blockSignals(true);
+            int skyVal = qBound(0, qRound(adj.timeOfDaySkyInfluence * 100.0f), 100);
+            m_globalTodSkyInfluenceSlider->setValue(skyVal);
+            if (m_globalTodSkyInfluenceLabel) m_globalTodSkyInfluenceLabel->setText(QString("%1%").arg(skyVal));
+            m_globalTodSkyInfluenceSlider->blockSignals(false);
+        }
+
+        if (m_globalTodHighlightWarmthSlider) {
+            m_globalTodHighlightWarmthSlider->blockSignals(true);
+            int hwVal = qBound(-100, qRound(adj.timeOfDayHighlightWarmth * 100.0f), 100);
+            m_globalTodHighlightWarmthSlider->setValue(hwVal);
+            if (m_globalTodHighlightWarmthLabel) m_globalTodHighlightWarmthLabel->setText(QString("%1%2%").arg(hwVal > 0 ? "+" : "").arg(hwVal));
+            m_globalTodHighlightWarmthSlider->blockSignals(false);
+        }
+
+        if (m_globalTodShadowCoolnessSlider) {
+            m_globalTodShadowCoolnessSlider->blockSignals(true);
+            int scVal = qBound(-100, qRound(adj.timeOfDayShadowCoolness * 100.0f), 100);
+            m_globalTodShadowCoolnessSlider->setValue(scVal);
+            if (m_globalTodShadowCoolnessLabel) m_globalTodShadowCoolnessLabel->setText(QString("%1%2%").arg(scVal > 0 ? "+" : "").arg(scVal));
+            m_globalTodShadowCoolnessSlider->blockSignals(false);
+        }
+
+        if (m_globalTodExposureBiasSlider) {
+            m_globalTodExposureBiasSlider->blockSignals(true);
+            int expVal = qBound(-20, qRound(adj.timeOfDayExposureBias * 10.0f), 20);
+            m_globalTodExposureBiasSlider->setValue(expVal);
+            if (m_globalTodExposureBiasLabel) m_globalTodExposureBiasLabel->setText(QString("%1%2 EV").arg(expVal > 0 ? "+" : "").arg(expVal / 10.0, 0, 'f', 1));
+            m_globalTodExposureBiasSlider->blockSignals(false);
+        }
+
+        if (m_globalTodLutStrengthSlider) {
+            m_globalTodLutStrengthSlider->blockSignals(true);
+            int lutVal = qBound(0, qRound(adj.timeOfDayLutStrength * 100.0f), 100);
+            m_globalTodLutStrengthSlider->setValue(lutVal);
+            if (m_globalTodLutStrengthLabel) m_globalTodLutStrengthLabel->setText(QString("%1%").arg(lutVal));
+            m_globalTodLutStrengthSlider->blockSignals(false);
+        }
     }
 
     if (m_projectDurationLabel) {
@@ -3516,6 +3947,438 @@ void InspectorWidget::onGlobalTimeOfDayChanged(int value)
     if (m_updatingUi || !m_model) return;
     bool enabled = m_globalTimeOfDayCheck->isChecked();
     m_model->setGlobalTimeOfDay(enabled, val, false);
+    emit globalPropertyModified();
+}
+
+void InspectorWidget::onClipTimeOfDaySourceChanged(int index)
+{
+    if (m_updatingUi || !m_model) return;
+    TimeOfDaySourceMode mode = (index == 0) ? TimeOfDaySourceMode::Auto : TimeOfDaySourceMode::Manual;
+    float srcTime = (index == 0) ? 0.60f : (m_clipTodSourceCombo ? m_clipTodSourceCombo->currentData().toFloat() : 0.60f);
+
+    auto updateClip = [mode, srcTime](ColorAdjustments &adj) {
+        adj.timeOfDaySourceMode = mode;
+        if (mode == TimeOfDaySourceMode::Manual) {
+            adj.timeOfDaySourceTime = srcTime;
+        }
+    };
+    if (m_selectedClipIds.size() > 1) {
+        m_model->saveState("Ajustar iluminación origen de clips");
+        for (qint64 cid : m_selectedClipIds) {
+            if (TimelineClip *c = m_model->findClip(cid)) {
+                ColorAdjustments adj = c->colorAdjustments();
+                updateClip(adj);
+                c->setColorAdjustments(adj);
+                emit clipPropertyModified(cid);
+            }
+        }
+        m_model->notifyChange();
+    } else if (m_selectedClipId > 0) {
+        if (TimelineClip *c = m_model->findClip(m_selectedClipId)) {
+            m_model->saveState("Ajustar iluminación origen de clip");
+            ColorAdjustments adj = c->colorAdjustments();
+            updateClip(adj);
+            c->setColorAdjustments(adj);
+            emit clipPropertyModified(m_selectedClipId);
+            m_model->notifyChange();
+        }
+    }
+}
+
+void InspectorWidget::onClipTimeOfDayIntensityChanged(int value)
+{
+    if (m_clipTodIntensityLabel) {
+        m_clipTodIntensityLabel->setText(QString("%1%").arg(value));
+    }
+    if (m_updatingUi || !m_model) return;
+    float val = value / 100.0f;
+    if (m_selectedClipIds.size() > 1) {
+        for (qint64 cid : m_selectedClipIds) {
+            if (TimelineClip *c = m_model->findClip(cid)) {
+                ColorAdjustments adj = c->colorAdjustments();
+                adj.timeOfDayIntensity = val;
+                c->setColorAdjustments(adj);
+                emit clipPropertyModified(cid);
+            }
+        }
+        m_model->notifyChange();
+    } else if (m_selectedClipId > 0) {
+        if (TimelineClip *c = m_model->findClip(m_selectedClipId)) {
+            ColorAdjustments adj = c->colorAdjustments();
+            adj.timeOfDayIntensity = val;
+            c->setColorAdjustments(adj);
+            emit clipPropertyModified(m_selectedClipId);
+            m_model->notifyChange();
+        }
+    }
+}
+
+void InspectorWidget::onClipTimeOfDayAdvancedToggled(bool checked)
+{
+    if (m_clipTodAdvancedToggleBtn) {
+        m_clipTodAdvancedToggleBtn->setText(checked ? "⚙️ Ajustes Avanzados ▾" : "⚙️ Ajustes Avanzados ▸");
+    }
+    if (m_clipTodAdvancedContainer) {
+        m_clipTodAdvancedContainer->setVisible(checked);
+    }
+}
+
+void InspectorWidget::onClipTimeOfDaySkinProtectionChanged(int value)
+{
+    if (m_clipTodSkinProtectionLabel) {
+        m_clipTodSkinProtectionLabel->setText(QString("%1%").arg(value));
+    }
+    if (m_updatingUi || !m_model) return;
+    float val = value / 100.0f;
+    if (m_selectedClipIds.size() > 1) {
+        for (qint64 cid : m_selectedClipIds) {
+            if (TimelineClip *c = m_model->findClip(cid)) {
+                ColorAdjustments adj = c->colorAdjustments();
+                adj.timeOfDaySkinProtection = val;
+                c->setColorAdjustments(adj);
+                emit clipPropertyModified(cid);
+            }
+        }
+        m_model->notifyChange();
+    } else if (m_selectedClipId > 0) {
+        if (TimelineClip *c = m_model->findClip(m_selectedClipId)) {
+            ColorAdjustments adj = c->colorAdjustments();
+            adj.timeOfDaySkinProtection = val;
+            c->setColorAdjustments(adj);
+            emit clipPropertyModified(m_selectedClipId);
+            m_model->notifyChange();
+        }
+    }
+}
+
+void InspectorWidget::onClipTimeOfDaySkyInfluenceChanged(int value)
+{
+    if (m_clipTodSkyInfluenceLabel) {
+        m_clipTodSkyInfluenceLabel->setText(QString("%1%").arg(value));
+    }
+    if (m_updatingUi || !m_model) return;
+    float val = value / 100.0f;
+    if (m_selectedClipIds.size() > 1) {
+        for (qint64 cid : m_selectedClipIds) {
+            if (TimelineClip *c = m_model->findClip(cid)) {
+                ColorAdjustments adj = c->colorAdjustments();
+                adj.timeOfDaySkyInfluence = val;
+                c->setColorAdjustments(adj);
+                emit clipPropertyModified(cid);
+            }
+        }
+        m_model->notifyChange();
+    } else if (m_selectedClipId > 0) {
+        if (TimelineClip *c = m_model->findClip(m_selectedClipId)) {
+            ColorAdjustments adj = c->colorAdjustments();
+            adj.timeOfDaySkyInfluence = val;
+            c->setColorAdjustments(adj);
+            emit clipPropertyModified(m_selectedClipId);
+            m_model->notifyChange();
+        }
+    }
+}
+
+void InspectorWidget::onClipTimeOfDayHighlightWarmthChanged(int value)
+{
+    if (m_clipTodHighlightWarmthLabel) {
+        m_clipTodHighlightWarmthLabel->setText(QString("%1%2%").arg(value > 0 ? "+" : "").arg(value));
+    }
+    if (m_updatingUi || !m_model) return;
+    float val = value / 100.0f;
+    if (m_selectedClipIds.size() > 1) {
+        for (qint64 cid : m_selectedClipIds) {
+            if (TimelineClip *c = m_model->findClip(cid)) {
+                ColorAdjustments adj = c->colorAdjustments();
+                adj.timeOfDayHighlightWarmth = val;
+                c->setColorAdjustments(adj);
+                emit clipPropertyModified(cid);
+            }
+        }
+        m_model->notifyChange();
+    } else if (m_selectedClipId > 0) {
+        if (TimelineClip *c = m_model->findClip(m_selectedClipId)) {
+            ColorAdjustments adj = c->colorAdjustments();
+            adj.timeOfDayHighlightWarmth = val;
+            c->setColorAdjustments(adj);
+            emit clipPropertyModified(m_selectedClipId);
+            m_model->notifyChange();
+        }
+    }
+}
+
+void InspectorWidget::onClipTimeOfDayShadowCoolnessChanged(int value)
+{
+    if (m_clipTodShadowCoolnessLabel) {
+        m_clipTodShadowCoolnessLabel->setText(QString("%1%2%").arg(value > 0 ? "+" : "").arg(value));
+    }
+    if (m_updatingUi || !m_model) return;
+    float val = value / 100.0f;
+    if (m_selectedClipIds.size() > 1) {
+        for (qint64 cid : m_selectedClipIds) {
+            if (TimelineClip *c = m_model->findClip(cid)) {
+                ColorAdjustments adj = c->colorAdjustments();
+                adj.timeOfDayShadowCoolness = val;
+                c->setColorAdjustments(adj);
+                emit clipPropertyModified(cid);
+            }
+        }
+        m_model->notifyChange();
+    } else if (m_selectedClipId > 0) {
+        if (TimelineClip *c = m_model->findClip(m_selectedClipId)) {
+            ColorAdjustments adj = c->colorAdjustments();
+            adj.timeOfDayShadowCoolness = val;
+            c->setColorAdjustments(adj);
+            emit clipPropertyModified(m_selectedClipId);
+            m_model->notifyChange();
+        }
+    }
+}
+
+void InspectorWidget::onClipTimeOfDayExposureBiasChanged(int value)
+{
+    if (m_clipTodExposureBiasLabel) {
+        m_clipTodExposureBiasLabel->setText(QString("%1%2 EV").arg(value > 0 ? "+" : "").arg(value / 10.0, 0, 'f', 1));
+    }
+    if (m_updatingUi || !m_model) return;
+    float val = value / 10.0f;
+    if (m_selectedClipIds.size() > 1) {
+        for (qint64 cid : m_selectedClipIds) {
+            if (TimelineClip *c = m_model->findClip(cid)) {
+                ColorAdjustments adj = c->colorAdjustments();
+                adj.timeOfDayExposureBias = val;
+                c->setColorAdjustments(adj);
+                emit clipPropertyModified(cid);
+            }
+        }
+        m_model->notifyChange();
+    } else if (m_selectedClipId > 0) {
+        if (TimelineClip *c = m_model->findClip(m_selectedClipId)) {
+            ColorAdjustments adj = c->colorAdjustments();
+            adj.timeOfDayExposureBias = val;
+            c->setColorAdjustments(adj);
+            emit clipPropertyModified(m_selectedClipId);
+            m_model->notifyChange();
+        }
+    }
+}
+
+void InspectorWidget::onClipTimeOfDayLutStrengthChanged(int value)
+{
+    if (m_clipTodLutStrengthLabel) {
+        m_clipTodLutStrengthLabel->setText(QString("%1%").arg(value));
+    }
+    if (m_updatingUi || !m_model) return;
+    float val = value / 100.0f;
+    if (m_selectedClipIds.size() > 1) {
+        for (qint64 cid : m_selectedClipIds) {
+            if (TimelineClip *c = m_model->findClip(cid)) {
+                ColorAdjustments adj = c->colorAdjustments();
+                adj.timeOfDayLutStrength = val;
+                c->setColorAdjustments(adj);
+                emit clipPropertyModified(cid);
+            }
+        }
+        m_model->notifyChange();
+    } else if (m_selectedClipId > 0) {
+        if (TimelineClip *c = m_model->findClip(m_selectedClipId)) {
+            ColorAdjustments adj = c->colorAdjustments();
+            adj.timeOfDayLutStrength = val;
+            c->setColorAdjustments(adj);
+            emit clipPropertyModified(m_selectedClipId);
+            m_model->notifyChange();
+        }
+    }
+}
+
+void InspectorWidget::onClipTimeOfDayResetAdvancedClicked()
+{
+    if (!m_model) return;
+    bool prevUpdating = m_updatingUi;
+    m_updatingUi = true;
+    if (m_clipTodSkinProtectionSlider) m_clipTodSkinProtectionSlider->setValue(100);
+    if (m_clipTodSkyInfluenceSlider) m_clipTodSkyInfluenceSlider->setValue(100);
+    if (m_clipTodHighlightWarmthSlider) m_clipTodHighlightWarmthSlider->setValue(0);
+    if (m_clipTodShadowCoolnessSlider) m_clipTodShadowCoolnessSlider->setValue(0);
+    if (m_clipTodExposureBiasSlider) m_clipTodExposureBiasSlider->setValue(0);
+    if (m_clipTodLutStrengthSlider) m_clipTodLutStrengthSlider->setValue(100);
+    if (m_clipTodSkinProtectionLabel) m_clipTodSkinProtectionLabel->setText("100%");
+    if (m_clipTodSkyInfluenceLabel) m_clipTodSkyInfluenceLabel->setText("100%");
+    if (m_clipTodHighlightWarmthLabel) m_clipTodHighlightWarmthLabel->setText("0%");
+    if (m_clipTodShadowCoolnessLabel) m_clipTodShadowCoolnessLabel->setText("0%");
+    if (m_clipTodExposureBiasLabel) m_clipTodExposureBiasLabel->setText("+0.0 EV");
+    if (m_clipTodLutStrengthLabel) m_clipTodLutStrengthLabel->setText("100%");
+    m_updatingUi = prevUpdating;
+
+    auto resetAdv = [](ColorAdjustments &adj) {
+        adj.timeOfDaySkinProtection = 1.0f;
+        adj.timeOfDaySkyInfluence = 1.0f;
+        adj.timeOfDayHighlightWarmth = 0.0f;
+        adj.timeOfDayShadowCoolness = 0.0f;
+        adj.timeOfDayExposureBias = 0.0f;
+        adj.timeOfDayLutStrength = 1.0f;
+    };
+    if (m_selectedClipIds.size() > 1) {
+        m_model->saveState("Restablecer ajustes avanzados hora del día");
+        for (qint64 cid : m_selectedClipIds) {
+            if (TimelineClip *c = m_model->findClip(cid)) {
+                ColorAdjustments adj = c->colorAdjustments();
+                resetAdv(adj);
+                c->setColorAdjustments(adj);
+                emit clipPropertyModified(cid);
+            }
+        }
+        m_model->notifyChange();
+    } else if (m_selectedClipId > 0) {
+        if (TimelineClip *c = m_model->findClip(m_selectedClipId)) {
+            m_model->saveState("Restablecer ajustes avanzados hora del día");
+            ColorAdjustments adj = c->colorAdjustments();
+            resetAdv(adj);
+            c->setColorAdjustments(adj);
+            emit clipPropertyModified(m_selectedClipId);
+            m_model->notifyChange();
+        }
+    }
+}
+
+void InspectorWidget::onGlobalTimeOfDaySourceChanged(int index)
+{
+    if (m_updatingUi || !m_model) return;
+    TimeOfDaySourceMode mode = (index == 0) ? TimeOfDaySourceMode::Auto : TimeOfDaySourceMode::Manual;
+    float srcTime = (index == 0) ? 0.60f : (m_globalTodSourceCombo ? m_globalTodSourceCombo->currentData().toFloat() : 0.60f);
+
+    m_model->saveState("Ajustar iluminación origen general");
+    ColorAdjustments adj = m_model->globalColorAdjustments();
+    adj.timeOfDaySourceMode = mode;
+    if (mode == TimeOfDaySourceMode::Manual) {
+        adj.timeOfDaySourceTime = srcTime;
+    }
+    m_model->setGlobalColorAdjustments(adj, false);
+    emit globalPropertyModified();
+}
+
+void InspectorWidget::onGlobalTimeOfDayIntensityChanged(int value)
+{
+    if (m_globalTodIntensityLabel) {
+        m_globalTodIntensityLabel->setText(QString("%1%").arg(value));
+    }
+    if (m_updatingUi || !m_model) return;
+    ColorAdjustments adj = m_model->globalColorAdjustments();
+    adj.timeOfDayIntensity = value / 100.0f;
+    m_model->setGlobalColorAdjustments(adj, false);
+    emit globalPropertyModified();
+}
+
+void InspectorWidget::onGlobalTimeOfDayAdvancedToggled(bool checked)
+{
+    if (m_globalTodAdvancedToggleBtn) {
+        m_globalTodAdvancedToggleBtn->setText(checked ? "⚙️ Ajustes Avanzados ▾" : "⚙️ Ajustes Avanzados ▸");
+    }
+    if (m_globalTodAdvancedContainer) {
+        m_globalTodAdvancedContainer->setVisible(checked);
+    }
+}
+
+void InspectorWidget::onGlobalTimeOfDaySkinProtectionChanged(int value)
+{
+    if (m_globalTodSkinProtectionLabel) {
+        m_globalTodSkinProtectionLabel->setText(QString("%1%").arg(value));
+    }
+    if (m_updatingUi || !m_model) return;
+    ColorAdjustments adj = m_model->globalColorAdjustments();
+    adj.timeOfDaySkinProtection = value / 100.0f;
+    m_model->setGlobalColorAdjustments(adj, false);
+    emit globalPropertyModified();
+}
+
+void InspectorWidget::onGlobalTimeOfDaySkyInfluenceChanged(int value)
+{
+    if (m_globalTodSkyInfluenceLabel) {
+        m_globalTodSkyInfluenceLabel->setText(QString("%1%").arg(value));
+    }
+    if (m_updatingUi || !m_model) return;
+    ColorAdjustments adj = m_model->globalColorAdjustments();
+    adj.timeOfDaySkyInfluence = value / 100.0f;
+    m_model->setGlobalColorAdjustments(adj, false);
+    emit globalPropertyModified();
+}
+
+void InspectorWidget::onGlobalTimeOfDayHighlightWarmthChanged(int value)
+{
+    if (m_globalTodHighlightWarmthLabel) {
+        m_globalTodHighlightWarmthLabel->setText(QString("%1%2%").arg(value > 0 ? "+" : "").arg(value));
+    }
+    if (m_updatingUi || !m_model) return;
+    ColorAdjustments adj = m_model->globalColorAdjustments();
+    adj.timeOfDayHighlightWarmth = value / 100.0f;
+    m_model->setGlobalColorAdjustments(adj, false);
+    emit globalPropertyModified();
+}
+
+void InspectorWidget::onGlobalTimeOfDayShadowCoolnessChanged(int value)
+{
+    if (m_globalTodShadowCoolnessLabel) {
+        m_globalTodShadowCoolnessLabel->setText(QString("%1%2%").arg(value > 0 ? "+" : "").arg(value));
+    }
+    if (m_updatingUi || !m_model) return;
+    ColorAdjustments adj = m_model->globalColorAdjustments();
+    adj.timeOfDayShadowCoolness = value / 100.0f;
+    m_model->setGlobalColorAdjustments(adj, false);
+    emit globalPropertyModified();
+}
+
+void InspectorWidget::onGlobalTimeOfDayExposureBiasChanged(int value)
+{
+    if (m_globalTodExposureBiasLabel) {
+        m_globalTodExposureBiasLabel->setText(QString("%1%2 EV").arg(value > 0 ? "+" : "").arg(value / 10.0, 0, 'f', 1));
+    }
+    if (m_updatingUi || !m_model) return;
+    ColorAdjustments adj = m_model->globalColorAdjustments();
+    adj.timeOfDayExposureBias = value / 10.0f;
+    m_model->setGlobalColorAdjustments(adj, false);
+    emit globalPropertyModified();
+}
+
+void InspectorWidget::onGlobalTimeOfDayLutStrengthChanged(int value)
+{
+    if (m_globalTodLutStrengthLabel) {
+        m_globalTodLutStrengthLabel->setText(QString("%1%").arg(value));
+    }
+    if (m_updatingUi || !m_model) return;
+    ColorAdjustments adj = m_model->globalColorAdjustments();
+    adj.timeOfDayLutStrength = value / 100.0f;
+    m_model->setGlobalColorAdjustments(adj, false);
+    emit globalPropertyModified();
+}
+
+void InspectorWidget::onGlobalTimeOfDayResetAdvancedClicked()
+{
+    if (!m_model) return;
+    bool prevUpdating = m_updatingUi;
+    m_updatingUi = true;
+    if (m_globalTodSkinProtectionSlider) m_globalTodSkinProtectionSlider->setValue(100);
+    if (m_globalTodSkyInfluenceSlider) m_globalTodSkyInfluenceSlider->setValue(100);
+    if (m_globalTodHighlightWarmthSlider) m_globalTodHighlightWarmthSlider->setValue(0);
+    if (m_globalTodShadowCoolnessSlider) m_globalTodShadowCoolnessSlider->setValue(0);
+    if (m_globalTodExposureBiasSlider) m_globalTodExposureBiasSlider->setValue(0);
+    if (m_globalTodLutStrengthSlider) m_globalTodLutStrengthSlider->setValue(100);
+    if (m_globalTodSkinProtectionLabel) m_globalTodSkinProtectionLabel->setText("100%");
+    if (m_globalTodSkyInfluenceLabel) m_globalTodSkyInfluenceLabel->setText("100%");
+    if (m_globalTodHighlightWarmthLabel) m_globalTodHighlightWarmthLabel->setText("0%");
+    if (m_globalTodShadowCoolnessLabel) m_globalTodShadowCoolnessLabel->setText("0%");
+    if (m_globalTodExposureBiasLabel) m_globalTodExposureBiasLabel->setText("+0.0 EV");
+    if (m_globalTodLutStrengthLabel) m_globalTodLutStrengthLabel->setText("100%");
+    m_updatingUi = prevUpdating;
+
+    m_model->saveState("Restablecer ajustes avanzados hora del día general");
+    ColorAdjustments adj = m_model->globalColorAdjustments();
+    adj.timeOfDaySkinProtection = 1.0f;
+    adj.timeOfDaySkyInfluence = 1.0f;
+    adj.timeOfDayHighlightWarmth = 0.0f;
+    adj.timeOfDayShadowCoolness = 0.0f;
+    adj.timeOfDayExposureBias = 0.0f;
+    adj.timeOfDayLutStrength = 1.0f;
+    m_model->setGlobalColorAdjustments(adj, false);
     emit globalPropertyModified();
 }
 

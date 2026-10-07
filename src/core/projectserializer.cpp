@@ -60,6 +60,15 @@ QJsonObject ProjectSerializer::serializeColorAdjustments(const ColorAdjustments 
     obj["blue"] = adj.blue;
     obj["timeOfDayEnabled"] = adj.timeOfDayEnabled;
     obj["timeOfDay"] = static_cast<double>(adj.timeOfDay);
+    obj["timeOfDaySourceMode"] = (adj.timeOfDaySourceMode == TimeOfDaySourceMode::Manual) ? "Manual" : "Auto";
+    obj["timeOfDaySourceTime"] = static_cast<double>(adj.timeOfDaySourceTime);
+    obj["timeOfDayIntensity"] = static_cast<double>(adj.timeOfDayIntensity);
+    obj["timeOfDaySkinProtection"] = static_cast<double>(adj.timeOfDaySkinProtection);
+    obj["timeOfDaySkyInfluence"] = static_cast<double>(adj.timeOfDaySkyInfluence);
+    obj["timeOfDayHighlightWarmth"] = static_cast<double>(adj.timeOfDayHighlightWarmth);
+    obj["timeOfDayShadowCoolness"] = static_cast<double>(adj.timeOfDayShadowCoolness);
+    obj["timeOfDayExposureBias"] = static_cast<double>(adj.timeOfDayExposureBias);
+    obj["timeOfDayLutStrength"] = static_cast<double>(adj.timeOfDayLutStrength);
 
     auto serializeCurve = [](const ColorCurve &c) -> QJsonArray {
         QJsonArray arr;
@@ -99,6 +108,19 @@ ColorAdjustments ProjectSerializer::deserializeColorAdjustments(const QJsonObjec
         readTod = 0.60f;
     }
     adj.timeOfDay = readTod;
+    if (obj.value("timeOfDaySourceMode").isString()) {
+        adj.timeOfDaySourceMode = (obj.value("timeOfDaySourceMode").toString() == "Manual") ? TimeOfDaySourceMode::Manual : TimeOfDaySourceMode::Auto;
+    } else {
+        adj.timeOfDaySourceMode = (obj.value("timeOfDaySourceMode").toInt(0) == 1) ? TimeOfDaySourceMode::Manual : TimeOfDaySourceMode::Auto;
+    }
+    adj.timeOfDaySourceTime = static_cast<float>(obj.value("timeOfDaySourceTime").toDouble(0.60));
+    adj.timeOfDayIntensity = static_cast<float>(obj.value("timeOfDayIntensity").toDouble(1.0));
+    adj.timeOfDaySkinProtection = static_cast<float>(obj.value("timeOfDaySkinProtection").toDouble(1.0));
+    adj.timeOfDaySkyInfluence = static_cast<float>(obj.value("timeOfDaySkyInfluence").toDouble(1.0));
+    adj.timeOfDayHighlightWarmth = static_cast<float>(obj.value("timeOfDayHighlightWarmth").toDouble(0.0));
+    adj.timeOfDayShadowCoolness = static_cast<float>(obj.value("timeOfDayShadowCoolness").toDouble(0.0));
+    adj.timeOfDayExposureBias = static_cast<float>(obj.value("timeOfDayExposureBias").toDouble(0.0));
+    adj.timeOfDayLutStrength = static_cast<float>(obj.value("timeOfDayLutStrength").toDouble(1.0));
 
     auto deserializeCurve = [](const QJsonArray &arr, CurveType type) -> ColorCurve {
         ColorCurve c(type);

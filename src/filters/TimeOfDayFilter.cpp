@@ -3,6 +3,8 @@
 #include <sstream>
 #include <iostream>
 #include <QFile>
+#include <QImage>
+#include <QRgb>
 
 // ============================================================================
 // 7 Calibrated Diurnal Profile States per Colorimetric Specification
@@ -319,6 +321,160 @@ TimeProfile TimeOfDayFilter::CalculateProfile(float sliderValue)
     return res;
 }
 
+TimeProfile TimeOfDayFilter::CalculateRelativeProfile(float sourceTime,
+                                                      float targetTime,
+                                                      const RelativeSettings &settings)
+{
+    float srcT = std::clamp(sourceTime, 0.0f, 1.0f);
+    float tgtT = std::clamp(targetTime, 0.0f, 1.0f);
+
+    TimeProfile pSrc = CalculateProfile(srcT);
+    TimeProfile pTgt = CalculateProfile(tgtT);
+
+    TimeProfile res;
+    // 1. Photometric Exposure EV delta + bias
+    res.exposureEV = (pTgt.exposureEV - pSrc.exposureEV) + settings.exposureBias;
+
+    // 2. White Balance / Illuminant Relighting delta
+    res.temperature = 6500.0f + (pTgt.temperature - pSrc.temperature);
+    res.tint = pTgt.tint - pSrc.tint;
+
+    // 3. Contrast & Saturation ratio
+    res.contrast = (pSrc.contrast > 0.01f) ? (pTgt.contrast / pSrc.contrast) : pTgt.contrast;
+    res.saturation = (pSrc.saturation > 0.01f) ? (pTgt.saturation / pSrc.saturation) : pTgt.saturation;
+
+    // 4. Split Toning
+    res.shadowTemperature = 6500.0f + (pTgt.shadowTemperature - pSrc.shadowTemperature);
+    res.shadowTint = pTgt.shadowTint - pSrc.shadowTint;
+    res.shadowLift = pTgt.shadowLift - pSrc.shadowLift;
+
+    res.midtoneTemperature = 6500.0f + (pTgt.midtoneTemperature - pSrc.midtoneTemperature);
+    res.midtoneGain = (pSrc.midtoneGain > 0.01f) ? (pTgt.midtoneGain / pSrc.midtoneGain) : pTgt.midtoneGain;
+
+    res.highlightTemperature = 6500.0f + (pTgt.highlightTemperature - pSrc.highlightTemperature);
+    res.highlightGain = (pSrc.highlightGain > 0.01f) ? (pTgt.highlightGain / pSrc.highlightGain) : pTgt.highlightGain;
+
+    // 5. Perceptual and Optical
+    float dt = std::abs(tgtT - srcT);
+    res.highlightRolloff = std::max(0.0f, pTgt.highlightRolloff - pSrc.highlightRolloff * 0.5f);
+    res.purkinjeStrength = std::max(0.0f, pTgt.purkinjeStrength - pSrc.purkinjeStrength);
+    res.skyExposureDrop = std::max(0.0f, pTgt.skyExposureDrop - pSrc.skyExposureDrop) * settings.skyInfluenceFactor;
+    res.skinProtection = pTgt.skinProtection * settings.skinProtectionFactor;
+
+    // 6. 3D LUT scaled by diurnal distance and factor
+    res.lutStrength = pTgt.lutStrength * settings.lutStrengthFactor * std::clamp(dt * 2.5f, 0.0f, 1.0f);
+
+    return res;
+}
+
+FrameAnalysisResult TimeOfDayFilter::AnalyzeFrame(const QImage &image)
+{
+    FrameAnalysisResult result;
+    if (image.isNull()) return result;
+
+    const int w = image.width();
+    const int h = image.height();
+    if (w <= 0 || h <= 0) return result;
+
+    const int samplesX = std::min(w, 32);
+    const int samplesY = std::min(h, 32);
+
+    double totalLinR = 0.0;
+    double totalLinG = 0.0;
+    double totalLinB = 0.0;
+    double totalWeight = 0.0;
+
+    auto srgbToLin = [](float c) -> float {
+        return (c <= 0.04045f) ? (c / 12.92f) : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    };
+
+    for (int sy = 0; sy < samplesY; ++sy) {
+        int y = (samplesY > 1) ? (sy * (h - 1) / (samplesY - 1)) : 0;
+        for (int sx = 0; sx < samplesX; ++sx) {
+            int x = (samplesX > 1) ? (sx * (w - 1) / (samplesX - 1)) : 0;
+            QRgb pixel = image.pixel(x, y);
+
+            float r = qRed(pixel) * (1.0f / 255.0f);
+            float g = qGreen(pixel) * (1.0f / 255.0f);
+            float b = qBlue(pixel) * (1.0f / 255.0f);
+
+            float rLin = srgbToLin(r);
+            float gLin = srgbToLin(g);
+            float bLin = srgbToLin(b);
+
+            float lum = 0.2126f * rLin + 0.7152f * gLin + 0.0722f * bLin;
+            if (lum < 0.005f) continue; // ignore letterbox black borders
+
+            float weight = 1.0f;
+            totalLinR += rLin * weight;
+            totalLinG += gLin * weight;
+            totalLinB += bLin * weight;
+            totalWeight += weight;
+        }
+    }
+
+    if (totalWeight < 1.0) {
+        result.estimatedTimeOfDay = 0.00f; // Night
+        result.estimatedCCT = 4000.0f;
+        result.meanLuminance = 0.01f;
+        result.confidence = 0.5f;
+        return result;
+    }
+
+    float avgR = static_cast<float>(totalLinR / totalWeight);
+    float avgG = static_cast<float>(totalLinG / totalWeight);
+    float avgB = static_cast<float>(totalLinB / totalWeight);
+    float meanLum = 0.2126f * avgR + 0.7152f * avgG + 0.0722f * avgB;
+    result.meanLuminance = meanLum;
+
+    // Convert average Linear RGB to CIE 1931 xy chromaticity
+    float X = 0.4124564f * avgR + 0.3575761f * avgG + 0.1804375f * avgB;
+    float Y = 0.2126729f * avgR + 0.7151522f * avgG + 0.0721750f * avgB;
+    float Z = 0.0193339f * avgR + 0.1191920f * avgG + 0.9503041f * avgB;
+    float sumXYZ = X + Y + Z;
+
+    float cct = 6500.0f;
+    if (sumXYZ > 0.0001f) {
+        float x = X / sumXYZ;
+        float y = Y / sumXYZ;
+        float denom = 0.1858f - y;
+        if (std::abs(denom) < 0.001f) {
+            denom = (denom >= 0.0f) ? 0.001f : -0.001f;
+        }
+        float n = (x - 0.3320f) / denom;
+        cct = 449.0f * (n * n * n) + 3525.0f * (n * n) + 6823.3f * n + 5520.33f;
+        cct = std::clamp(cct, 1800.0f, 16000.0f);
+    }
+    result.estimatedCCT = cct;
+
+    float rbRatio = avgR / std::max(0.001f, avgB);
+
+    float estTime = 0.60f; // Default Noon
+    if (meanLum < 0.04f) {
+        estTime = 0.00f; // Night
+    } else if (cct > 7800.0f && avgB > avgR * 1.15f) {
+        estTime = 0.15f; // Blue Hour
+    } else if (cct < 3500.0f && rbRatio > 2.0f) {
+        estTime = 1.00f; // Sunset
+    } else if (cct < 4600.0f && rbRatio > 1.35f) {
+        estTime = 0.82f; // Golden Hour
+    } else if (cct < 5300.0f && meanLum < 0.15f) {
+        estTime = 0.28f; // Dawn
+    } else if (cct < 5900.0f) {
+        estTime = 0.42f; // Morning
+    } else {
+        estTime = 0.60f; // Noon (Neutral)
+    }
+
+    result.estimatedTimeOfDay = estTime;
+    return result;
+}
+
+float TimeOfDayFilter::EstimateSourceTime(const QImage &image)
+{
+    return AnalyzeFrame(image).estimatedTimeOfDay;
+}
+
 const char* TimeOfDayFilter::GetPhaseName(float sliderValue)
 {
     float t = std::clamp(sliderValue, 0.0f, 1.0f);
@@ -553,66 +709,112 @@ bool TimeOfDayFilter::LoadCubeFile(const std::string &filePath, Lut3D &outLut)
 bool TimeOfDayFilter::RenderTimelineSlice(int64_t currentFrame,
                                           int64_t startFrame,
                                           int64_t endFrame,
-                                          float sliderValue,
-                                          unsigned int textureId)
+                                          float targetTime,
+                                          float sourceTime,
+                                          float intensity,
+                                          unsigned int textureId,
+                                          const RelativeSettings &settings)
 {
     if (currentFrame < startFrame || currentFrame > endFrame) {
         return false;
     }
 
-    float clampedSlider = std::clamp(sliderValue, 0.0f, 1.0f);
-    TimeProfile profile = CalculateProfile(clampedSlider);
+    float clampedTgt = std::clamp(targetTime, 0.0f, 1.0f);
+    float clampedSrc = std::clamp(sourceTime, 0.0f, 1.0f);
+    float clampedIntensity = std::clamp(intensity, 0.0f, 1.0f);
 
-    auto wbGains = KelvinToRGB(profile.temperature, profile.tint);
-    auto shadowGains = KelvinToRGB(profile.shadowTemperature, profile.shadowTint);
-    auto midtoneGains = KelvinToRGB(profile.midtoneTemperature, 0.0f);
-    auto highlightGains = KelvinToRGB(profile.highlightTemperature, 0.0f);
+    TimeProfile srcProfile = CalculateProfile(clampedSrc);
+    TimeProfile tgtProfile = CalculateProfile(clampedTgt);
+    TimeProfile relProfile = CalculateRelativeProfile(clampedSrc, clampedTgt, settings);
 
-    m_lastUniforms.exposureEV = profile.exposureEV;
+    auto srcWB = KelvinToRGB(srcProfile.temperature, srcProfile.tint);
+    auto tgtWB = KelvinToRGB(tgtProfile.temperature, tgtProfile.tint);
+
+    auto srcShadow = KelvinToRGB(srcProfile.shadowTemperature, srcProfile.shadowTint);
+    auto tgtShadow = KelvinToRGB(tgtProfile.shadowTemperature, tgtProfile.shadowTint);
+
+    auto srcMid = KelvinToRGB(srcProfile.midtoneTemperature, 0.0f);
+    auto tgtMid = KelvinToRGB(tgtProfile.midtoneTemperature, 0.0f);
+
+    auto srcHi = KelvinToRGB(srcProfile.highlightTemperature, 0.0f);
+    auto tgtHi = KelvinToRGB(tgtProfile.highlightTemperature, 0.0f);
+
+    std::array<float, 3> wbGains;
+    std::array<float, 3> shadowGains;
+    std::array<float, 3> midtoneGains;
+    std::array<float, 3> highlightGains;
+
+    for (int i = 0; i < 3; ++i) {
+        wbGains[i] = tgtWB[i] / std::max(0.01f, srcWB[i]);
+        shadowGains[i] = tgtShadow[i] / std::max(0.01f, srcShadow[i]);
+        midtoneGains[i] = (tgtMid[i] * tgtProfile.midtoneGain) / std::max(0.01f, srcMid[i] * srcProfile.midtoneGain);
+        highlightGains[i] = (tgtHi[i] * tgtProfile.highlightGain) / std::max(0.01f, srcHi[i] * srcProfile.highlightGain);
+    }
+
+    // Apply warmth/coolness biases
+    highlightGains[0] *= (1.0f + settings.highlightWarmthBias * 0.35f);
+    highlightGains[2] *= (1.0f - settings.highlightWarmthBias * 0.35f);
+
+    shadowGains[0] *= (1.0f - settings.shadowCoolnessBias * 0.30f);
+    shadowGains[2] *= (1.0f + settings.shadowCoolnessBias * 0.30f);
+
+    m_lastUniforms.exposureEV = relProfile.exposureEV;
     for (int i = 0; i < 3; ++i) {
         m_lastUniforms.whiteBalanceGains[i] = wbGains[i];
         m_lastUniforms.shadowGains[i] = shadowGains[i];
-        m_lastUniforms.midtoneGains[i] = midtoneGains[i] * profile.midtoneGain;
-        m_lastUniforms.highlightGains[i] = highlightGains[i] * profile.highlightGain;
+        m_lastUniforms.midtoneGains[i] = midtoneGains[i];
+        m_lastUniforms.highlightGains[i] = highlightGains[i];
     }
-    m_lastUniforms.contrast = profile.contrast;
-    m_lastUniforms.saturation = profile.saturation;
-    m_lastUniforms.shadowLift = profile.shadowLift;
-    m_lastUniforms.midtoneGain = profile.midtoneGain;
-    m_lastUniforms.highlightGain = profile.highlightGain;
-    m_lastUniforms.highlightRolloff = profile.highlightRolloff;
-    m_lastUniforms.purkinjeStrength = profile.purkinjeStrength;
-    m_lastUniforms.skyExposureDrop = profile.skyExposureDrop;
-    m_lastUniforms.skinProtection = profile.skinProtection;
-    m_lastUniforms.lutStrength = profile.lutStrength;
-    m_lastUniforms.timeOfDay = clampedSlider;
+    m_lastUniforms.contrast = relProfile.contrast;
+    m_lastUniforms.saturation = relProfile.saturation;
+    m_lastUniforms.shadowLift = relProfile.shadowLift;
+    m_lastUniforms.midtoneGain = relProfile.midtoneGain;
+    m_lastUniforms.highlightGain = relProfile.highlightGain;
+    m_lastUniforms.highlightRolloff = relProfile.highlightRolloff;
+    m_lastUniforms.purkinjeStrength = relProfile.purkinjeStrength;
+    m_lastUniforms.skyExposureDrop = relProfile.skyExposureDrop;
+    m_lastUniforms.skinProtection = relProfile.skinProtection;
+    m_lastUniforms.lutStrength = relProfile.lutStrength;
+    m_lastUniforms.timeOfDay = clampedTgt;
+    m_lastUniforms.sourceTimeOfDay = clampedSrc;
+    m_lastUniforms.intensity = clampedIntensity;
     m_lastUniforms.textureId = textureId;
 
     if (m_floatSetter) {
-        m_floatSetter("u_exposureEV", profile.exposureEV);
-        m_floatSetter("u_contrast", profile.contrast);
-        m_floatSetter("u_saturation", profile.saturation);
-        m_floatSetter("u_shadowLift", profile.shadowLift);
-        m_floatSetter("u_midtoneGain", profile.midtoneGain);
-        m_floatSetter("u_highlightGain", profile.highlightGain);
-        m_floatSetter("u_highlightRolloff", profile.highlightRolloff);
-        m_floatSetter("u_purkinjeStrength", profile.purkinjeStrength);
-        m_floatSetter("u_skyExposureDrop", profile.skyExposureDrop);
-        m_floatSetter("u_skinProtection", profile.skinProtection);
-        m_floatSetter("u_lutStrength", profile.lutStrength);
-        m_floatSetter("u_timeOfDay", clampedSlider);
+        m_floatSetter("u_exposureEV", relProfile.exposureEV);
+        m_floatSetter("u_contrast", relProfile.contrast);
+        m_floatSetter("u_saturation", relProfile.saturation);
+        m_floatSetter("u_shadowLift", relProfile.shadowLift);
+        m_floatSetter("u_midtoneGain", relProfile.midtoneGain);
+        m_floatSetter("u_highlightGain", relProfile.highlightGain);
+        m_floatSetter("u_highlightRolloff", relProfile.highlightRolloff);
+        m_floatSetter("u_purkinjeStrength", relProfile.purkinjeStrength);
+        m_floatSetter("u_skyExposureDrop", relProfile.skyExposureDrop);
+        m_floatSetter("u_skinProtection", relProfile.skinProtection);
+        m_floatSetter("u_lutStrength", relProfile.lutStrength);
+        m_floatSetter("u_timeOfDay", clampedTgt);
+        m_floatSetter("u_intensity", clampedIntensity);
     }
     if (m_vec3Setter) {
         m_vec3Setter("u_whiteBalanceGains", wbGains[0], wbGains[1], wbGains[2]);
         m_vec3Setter("u_shadowGains", shadowGains[0], shadowGains[1], shadowGains[2]);
-        m_vec3Setter("u_midtoneGains", m_lastUniforms.midtoneGains[0], m_lastUniforms.midtoneGains[1], m_lastUniforms.midtoneGains[2]);
-        m_vec3Setter("u_highlightGains", m_lastUniforms.highlightGains[0], m_lastUniforms.highlightGains[1], m_lastUniforms.highlightGains[2]);
+        m_vec3Setter("u_midtoneGains", midtoneGains[0], midtoneGains[1], midtoneGains[2]);
+        m_vec3Setter("u_highlightGains", highlightGains[0], highlightGains[1], highlightGains[2]);
     }
     if (m_textureSetter && textureId > 0) {
         m_textureSetter("u_texture", 0, textureId);
     }
 
     return true;
+}
+
+bool TimeOfDayFilter::RenderTimelineSlice(int64_t currentFrame,
+                                          int64_t startFrame,
+                                          int64_t endFrame,
+                                          float sliderValue,
+                                          unsigned int textureId)
+{
+    return RenderTimelineSlice(currentFrame, startFrame, endFrame, sliderValue, 0.60f, 1.0f, textureId);
 }
 
 void TimeOfDayFilter::SetUniformSetters(FloatUniformSetter floatSetter,

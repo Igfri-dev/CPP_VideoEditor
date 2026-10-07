@@ -2429,7 +2429,61 @@ void testTimeOfDayColorGrading()
     assert(filter.CurrentUniforms().highlightGain > 0.0f);
     assert(capturedMidtoneGain > 0.0f);
     assert(capturedHighlightGain > 0.0f);
-    std::cout << "  -> TimeOfDayFilter state profiles, interpolation & RenderTimelineSlice verified." << std::endl;
+
+    // Test Relative Overload of RenderTimelineSlice
+    assert(filter.RenderTimelineSlice(150, 100, 200, 1.00f, 0.60f, 0.75f, 99));
+    assert(filter.CurrentUniforms().textureId == 99);
+    assert(std::abs(filter.CurrentUniforms().timeOfDay - 1.00f) < 0.001f);
+    assert(std::abs(filter.CurrentUniforms().sourceTimeOfDay - 0.60f) < 0.001f);
+    assert(std::abs(filter.CurrentUniforms().intensity - 0.75f) < 0.001f);
+
+    // Test Relative Relighting Delta Profile Calculation
+    TimeOfDayFilter::RelativeSettings relSettings;
+    // When source == target (e.g. Sunset -> Sunset), delta transform is mathematical identity
+    TimeProfile sunsetDelta = TimeOfDayFilter::CalculateRelativeProfile(1.00f, 1.00f, relSettings);
+    assert(std::abs(sunsetDelta.exposureEV) < 0.001f);
+    assert(std::abs(sunsetDelta.contrast - 1.00f) < 0.001f);
+    assert(std::abs(sunsetDelta.saturation - 1.00f) < 0.001f);
+    assert(std::abs(sunsetDelta.midtoneGain - 1.00f) < 0.001f);
+    assert(std::abs(sunsetDelta.highlightGain - 1.00f) < 0.001f);
+
+    // When source is Noon (0.60f, standard neutral reference), relative profile equals target profile
+    TimeProfile noonToSunset = TimeOfDayFilter::CalculateRelativeProfile(0.60f, 1.00f, relSettings);
+    TimeProfile absSunset = TimeOfDayFilter::CalculateProfile(1.00f);
+    assert(std::abs(noonToSunset.exposureEV - absSunset.exposureEV) < 0.001f);
+    assert(std::abs(noonToSunset.contrast - absSunset.contrast) < 0.001f);
+
+    // When source is Sunset (1.00f) and target is Golden Hour (0.82f), image brightens (+0.45 EV) instead of double-darkening
+    TimeProfile sunsetToGolden = TimeOfDayFilter::CalculateRelativeProfile(1.00f, 0.82f, relSettings);
+    assert(sunsetToGolden.exposureEV > 0.0f);
+
+    // Test Advanced settings bias
+    relSettings.exposureBias = 0.5f;
+    relSettings.highlightWarmthBias = 0.2f;
+    relSettings.shadowCoolnessBias = -0.1f;
+    relSettings.skinProtectionFactor = 0.8f;
+    relSettings.skyInfluenceFactor = 0.5f;
+    relSettings.lutStrengthFactor = 0.7f;
+    TimeProfile biasedProfile = TimeOfDayFilter::CalculateRelativeProfile(0.60f, 1.00f, relSettings);
+    assert(std::abs(biasedProfile.exposureEV - (absSunset.exposureEV + 0.5f)) < 0.001f);
+    assert(std::abs(biasedProfile.lutStrength - (absSunset.lutStrength * 0.7f)) < 0.001f);
+
+    // Test Frame Analysis and Source Estimation
+    QImage daylightImg(64, 64, QImage::Format_ARGB32);
+    daylightImg.fill(qRgb(200, 200, 200));
+    float estimatedDaylight = TimeOfDayFilter::EstimateSourceTime(daylightImg);
+    assert(std::abs(estimatedDaylight - 0.60f) < 0.05f);
+
+    QImage sunsetImg(64, 64, QImage::Format_ARGB32);
+    sunsetImg.fill(qRgb(240, 140, 60));
+    float estimatedSunset = TimeOfDayFilter::EstimateSourceTime(sunsetImg);
+    assert(estimatedSunset >= 0.80f);
+
+    QImage nightImg(64, 64, QImage::Format_ARGB32);
+    nightImg.fill(qRgb(15, 20, 50));
+    float estimatedNight = TimeOfDayFilter::EstimateSourceTime(nightImg);
+    assert(estimatedNight <= 0.20f);
+    std::cout << "  -> TimeOfDayFilter state profiles, relative delta, frame analysis & RenderTimelineSlice verified." << std::endl;
 
     // 2. ColorAdjustments Data Model & Identity checks
     ColorAdjustments defAdj;
@@ -2551,6 +2605,49 @@ void testTimeOfDayColorGrading()
     assert(qRed(goldenSkin) > 100); // Preserved luminosity and natural tone without crushing
     assert(qGreen(goldenSkin) > 50);
 
+    // Relative Relighting & Intensity blending tests in VideoCompositor
+    ColorAdjustments relAdj;
+    relAdj.timeOfDayEnabled = true;
+    relAdj.timeOfDay = 1.00f; // Sunset
+    relAdj.timeOfDaySourceMode = TimeOfDaySourceMode::Manual;
+    relAdj.timeOfDaySourceTime = 1.00f; // Source is also Sunset -> Relative delta is identity
+    relAdj.timeOfDayIntensity = 1.0f;
+    QImage sunsetIdentity = VideoCompositor::applyTimeOfDay(testImg, relAdj);
+    QRgb origPix = testImg.pixel(50, 70);
+    QRgb idPix = sunsetIdentity.pixel(50, 70);
+    assert(std::abs(qRed(origPix) - qRed(idPix)) <= 2);
+    assert(std::abs(qGreen(origPix) - qGreen(idPix)) <= 2);
+    assert(std::abs(qBlue(origPix) - qBlue(idPix)) <= 2);
+
+    // Test Intensity = 0.0f -> Pass-through original image
+    ColorAdjustments zeroIntAdj;
+    zeroIntAdj.timeOfDayEnabled = true;
+    zeroIntAdj.timeOfDay = 0.00f; // Night
+    zeroIntAdj.timeOfDayIntensity = 0.0f; // 0% strength
+    QImage zeroIntGraded = VideoCompositor::applyTimeOfDay(testImg, zeroIntAdj);
+    assert(zeroIntGraded == testImg);
+
+    // Test Intensity = 0.5f -> Midpoint between original and relighted
+    ColorAdjustments fullNightAdj;
+    fullNightAdj.timeOfDayEnabled = true;
+    fullNightAdj.timeOfDay = 0.00f; // Night
+    fullNightAdj.timeOfDaySourceMode = TimeOfDaySourceMode::Manual;
+    fullNightAdj.timeOfDaySourceTime = 0.60f;
+    fullNightAdj.timeOfDayIntensity = 1.0f;
+    QImage fullNightGraded = VideoCompositor::applyTimeOfDay(testImg, fullNightAdj);
+    int fullNightLuma = qRed(fullNightGraded.pixel(20, 85)) + qGreen(fullNightGraded.pixel(20, 85)) + qBlue(fullNightGraded.pixel(20, 85));
+    int origGroundLuma = qRed(testImg.pixel(20, 85)) + qGreen(testImg.pixel(20, 85)) + qBlue(testImg.pixel(20, 85));
+
+    ColorAdjustments halfIntAdj;
+    halfIntAdj.timeOfDayEnabled = true;
+    halfIntAdj.timeOfDay = 0.00f; // Night
+    halfIntAdj.timeOfDaySourceMode = TimeOfDaySourceMode::Manual;
+    halfIntAdj.timeOfDaySourceTime = 0.60f;
+    halfIntAdj.timeOfDayIntensity = 0.5f;
+    QImage halfIntGraded = VideoCompositor::applyTimeOfDay(testImg, halfIntAdj);
+    int halfGroundLuma = qRed(halfIntGraded.pixel(20, 85)) + qGreen(halfIntGraded.pixel(20, 85)) + qBlue(halfIntGraded.pixel(20, 85));
+    assert(halfGroundLuma > fullNightLuma && halfGroundLuma < origGroundLuma);
+
     // VideoCompositor renderFrame integration
     QImage compFrame = VideoCompositor::renderFrame(&model, 1000, QSize(640, 360));
     assert(!compFrame.isNull());
@@ -2567,6 +2664,42 @@ void testTimeOfDayColorGrading()
     assert(deserializedAdj.timeOfDayEnabled == true);
     assert(std::abs(deserializedAdj.timeOfDay - 1.00f) < 0.001f);
 
+    // Full roundtrip of all new fields
+    ColorAdjustments fullAdj;
+    fullAdj.timeOfDayEnabled = true;
+    fullAdj.timeOfDay = 0.82f;
+    fullAdj.timeOfDaySourceMode = TimeOfDaySourceMode::Manual;
+    fullAdj.timeOfDaySourceTime = 0.60f;
+    fullAdj.timeOfDayIntensity = 0.75f;
+    fullAdj.timeOfDaySkinProtection = 0.85f;
+    fullAdj.timeOfDaySkyInfluence = 0.90f;
+    fullAdj.timeOfDayHighlightWarmth = 0.15f;
+    fullAdj.timeOfDayShadowCoolness = -0.10f;
+    fullAdj.timeOfDayExposureBias = 0.30f;
+    fullAdj.timeOfDayLutStrength = 0.70f;
+
+    QJsonObject fullJson = ProjectSerializer::serializeColorAdjustments(fullAdj);
+    assert(fullJson.value("timeOfDaySourceMode").toString() == "Manual");
+    assert(std::abs(fullJson.value("timeOfDaySourceTime").toDouble() - 0.60) < 0.001);
+    assert(std::abs(fullJson.value("timeOfDayIntensity").toDouble() - 0.75) < 0.001);
+    assert(std::abs(fullJson.value("timeOfDaySkinProtection").toDouble() - 0.85) < 0.001);
+    assert(std::abs(fullJson.value("timeOfDaySkyInfluence").toDouble() - 0.90) < 0.001);
+    assert(std::abs(fullJson.value("timeOfDayHighlightWarmth").toDouble() - 0.15) < 0.001);
+    assert(std::abs(fullJson.value("timeOfDayShadowCoolness").toDouble() - (-0.10)) < 0.001);
+    assert(std::abs(fullJson.value("timeOfDayExposureBias").toDouble() - 0.30) < 0.001);
+    assert(std::abs(fullJson.value("timeOfDayLutStrength").toDouble() - 0.70) < 0.001);
+
+    ColorAdjustments fullDeser = ProjectSerializer::deserializeColorAdjustments(fullJson);
+    assert(fullDeser.timeOfDaySourceMode == TimeOfDaySourceMode::Manual);
+    assert(std::abs(fullDeser.timeOfDaySourceTime - 0.60f) < 0.001f);
+    assert(std::abs(fullDeser.timeOfDayIntensity - 0.75f) < 0.001f);
+    assert(std::abs(fullDeser.timeOfDaySkinProtection - 0.85f) < 0.001f);
+    assert(std::abs(fullDeser.timeOfDaySkyInfluence - 0.90f) < 0.001f);
+    assert(std::abs(fullDeser.timeOfDayHighlightWarmth - 0.15f) < 0.001f);
+    assert(std::abs(fullDeser.timeOfDayShadowCoolness - (-0.10f)) < 0.001f);
+    assert(std::abs(fullDeser.timeOfDayExposureBias - 0.30f) < 0.001f);
+    assert(std::abs(fullDeser.timeOfDayLutStrength - 0.70f) < 0.001f);
+
     // Verify manual color channel adjustments (including adj.blue) roundtrip safely
     ColorAdjustments blueAdj;
     blueAdj.blue = 37;
@@ -2582,6 +2715,8 @@ void testTimeOfDayColorGrading()
     legacyObj["timeOfDay"] = 0.66;
     ColorAdjustments legacyDeserialized = ProjectSerializer::deserializeColorAdjustments(legacyObj);
     assert(std::abs(legacyDeserialized.timeOfDay - 0.60f) < 0.005f);
+    assert(legacyDeserialized.timeOfDaySourceMode == TimeOfDaySourceMode::Auto);
+    assert(std::abs(legacyDeserialized.timeOfDayIntensity - 1.0f) < 0.001f);
     std::cout << "  -> ProjectSerializer Time of Day JSON serialization & legacy migration verified." << std::endl;
 
     // 6. InspectorWidget UI instantiation and Preset bindings

@@ -87,6 +87,11 @@ enum class ColorGradeMode {
     Curves = 1
 };
 
+enum class TimeOfDaySourceMode {
+    Auto = 0,
+    Manual = 1
+};
+
 struct ColorAdjustments {
     ColorGradeMode mode = ColorGradeMode::Sliders;
 
@@ -104,13 +109,38 @@ struct ColorAdjustments {
     ColorCurve greenCurve = ColorCurve::defaultChannel(CurveType::Green);
     ColorCurve blueCurve = ColorCurve::defaultChannel(CurveType::Blue);
 
-    // Time of Day (Natural Diurnal Relighting)
+    // Time of Day (Natural Diurnal Relighting & Relative Lighting)
     bool timeOfDayEnabled = false;
-    float timeOfDay = 0.60f; // [0.0f, 1.0f]: 0.00 = Noche, 0.15 = Blue Hour, 0.28 = Amanecer, 0.42 = Mañana, 0.60 = Mediodía (Neutro), 0.82 = Golden Hour, 1.00 = Atardecer
+    float timeOfDay = 0.60f; // Target Time [0.0f, 1.0f]: 0.00 = Noche, 0.60 = Mediodía (Neutro), 1.00 = Atardecer
+    TimeOfDaySourceMode timeOfDaySourceMode = TimeOfDaySourceMode::Auto;
+    float timeOfDaySourceTime = 0.60f; // Source / Reference Time when in Manual mode [0.0f, 1.0f]
+    float timeOfDayIntensity = 1.0f;  // Relighting Strength [0.0f, 1.0f] (0% = original, 100% = full relighted)
+
+    // Advanced Relative Relighting parameters
+    float timeOfDaySkinProtection = 1.0f;    // Multiplier for skin protection [0.0f, 1.0f] (default 1.0f)
+    float timeOfDaySkyInfluence = 1.0f;       // Multiplier for sky exposure drop [0.0f, 1.0f] (default 1.0f)
+    float timeOfDayHighlightWarmth = 0.0f;   // Highlight warmth bias [-1.0f, 1.0f] (default 0.0f)
+    float timeOfDayShadowCoolness = 0.0f;    // Shadow coolness bias [-1.0f, 1.0f] (default 0.0f)
+    float timeOfDayExposureBias = 0.0f;      // Exposure offset in EV [-2.0f, 2.0f] (default 0.0f)
+    float timeOfDayLutStrength = 1.0f;       // Multiplier for 3D LUT look [0.0f, 1.0f] (default 1.0f)
 
     bool isIdentity() const {
-        if (timeOfDayEnabled && std::abs(timeOfDay - 0.60f) > 0.005f) {
-            return false;
+        if (timeOfDayEnabled && timeOfDayIntensity > 0.001f) {
+            if (timeOfDaySourceMode == TimeOfDaySourceMode::Manual) {
+                if (std::abs(timeOfDay - timeOfDaySourceTime) > 0.005f ||
+                    std::abs(timeOfDayExposureBias) > 0.01f ||
+                    std::abs(timeOfDayHighlightWarmth) > 0.01f ||
+                    std::abs(timeOfDayShadowCoolness) > 0.01f) {
+                    return false;
+                }
+            } else {
+                if (std::abs(timeOfDay - 0.60f) > 0.005f ||
+                    std::abs(timeOfDayExposureBias) > 0.01f ||
+                    std::abs(timeOfDayHighlightWarmth) > 0.01f ||
+                    std::abs(timeOfDayShadowCoolness) > 0.01f) {
+                    return false;
+                }
+            }
         }
         if (mode == ColorGradeMode::Sliders) {
             return brightness == 0 && luminosity == 0 && red == 0 && green == 0 && blue == 0;
@@ -126,6 +156,15 @@ struct ColorAdjustments {
                red == o.red && green == o.green && blue == o.blue &&
                timeOfDayEnabled == o.timeOfDayEnabled &&
                std::abs(timeOfDay - o.timeOfDay) < 0.001f &&
+               timeOfDaySourceMode == o.timeOfDaySourceMode &&
+               std::abs(timeOfDaySourceTime - o.timeOfDaySourceTime) < 0.001f &&
+               std::abs(timeOfDayIntensity - o.timeOfDayIntensity) < 0.001f &&
+               std::abs(timeOfDaySkinProtection - o.timeOfDaySkinProtection) < 0.001f &&
+               std::abs(timeOfDaySkyInfluence - o.timeOfDaySkyInfluence) < 0.001f &&
+               std::abs(timeOfDayHighlightWarmth - o.timeOfDayHighlightWarmth) < 0.001f &&
+               std::abs(timeOfDayShadowCoolness - o.timeOfDayShadowCoolness) < 0.001f &&
+               std::abs(timeOfDayExposureBias - o.timeOfDayExposureBias) < 0.001f &&
+               std::abs(timeOfDayLutStrength - o.timeOfDayLutStrength) < 0.001f &&
                lumaCurve == o.lumaCurve && colorCurve == o.colorCurve &&
                redCurve == o.redCurve && greenCurve == o.greenCurve && blueCurve == o.blueCurve;
     }
@@ -249,19 +288,21 @@ public:
     const ColorAdjustments& colorAdjustments() const { return m_colorAdjustments; }
     ColorAdjustments& colorAdjustments() { return m_colorAdjustments; }
     void setColorAdjustments(const ColorAdjustments &adj) {
-        m_colorAdjustments.mode = adj.mode;
+        m_colorAdjustments = adj;
         m_colorAdjustments.brightness = qBound(-100, adj.brightness, 100);
         m_colorAdjustments.luminosity = qBound(-100, adj.luminosity, 100);
         m_colorAdjustments.red = qBound(-100, adj.red, 100);
         m_colorAdjustments.green = qBound(-100, adj.green, 100);
         m_colorAdjustments.blue = qBound(-100, adj.blue, 100);
-        m_colorAdjustments.timeOfDayEnabled = adj.timeOfDayEnabled;
         m_colorAdjustments.timeOfDay = qBound(0.0f, adj.timeOfDay, 1.0f);
-        m_colorAdjustments.lumaCurve = adj.lumaCurve;
-        m_colorAdjustments.colorCurve = adj.colorCurve;
-        m_colorAdjustments.redCurve = adj.redCurve;
-        m_colorAdjustments.greenCurve = adj.greenCurve;
-        m_colorAdjustments.blueCurve = adj.blueCurve;
+        m_colorAdjustments.timeOfDaySourceTime = qBound(0.0f, adj.timeOfDaySourceTime, 1.0f);
+        m_colorAdjustments.timeOfDayIntensity = qBound(0.0f, adj.timeOfDayIntensity, 1.0f);
+        m_colorAdjustments.timeOfDaySkinProtection = qBound(0.0f, adj.timeOfDaySkinProtection, 1.0f);
+        m_colorAdjustments.timeOfDaySkyInfluence = qBound(0.0f, adj.timeOfDaySkyInfluence, 1.0f);
+        m_colorAdjustments.timeOfDayHighlightWarmth = qBound(-1.0f, adj.timeOfDayHighlightWarmth, 1.0f);
+        m_colorAdjustments.timeOfDayShadowCoolness = qBound(-1.0f, adj.timeOfDayShadowCoolness, 1.0f);
+        m_colorAdjustments.timeOfDayExposureBias = qBound(-2.0f, adj.timeOfDayExposureBias, 2.0f);
+        m_colorAdjustments.timeOfDayLutStrength = qBound(0.0f, adj.timeOfDayLutStrength, 1.0f);
     }
     bool isTimeOfDayEnabled() const { return m_colorAdjustments.timeOfDayEnabled; }
     void setTimeOfDayEnabled(bool enabled) { m_colorAdjustments.timeOfDayEnabled = enabled; }

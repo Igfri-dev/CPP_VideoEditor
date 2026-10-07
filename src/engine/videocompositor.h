@@ -10,5 +10,6 @@ public:
     static QImage applyFilter(const QImage &source, VisualFilter filter);
     static QImage applyFilters(const QImage &source, const QVector<VisualFilter> &filters);
     static QImage applyColorAdjustments(const QImage &source, const ColorAdjustments &adj);
+    static QImage applyTimeOfDay(const QImage &source, const ColorAdjustments &adj);
     static QImage applyTimeOfDay(const QImage &source, float sliderValue);
 };

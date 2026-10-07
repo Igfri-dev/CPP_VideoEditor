@@ -383,22 +383,43 @@ private:
 
 } // namespace
 
-QImage VideoCompositor::applyTimeOfDay(const QImage &source, float sliderValue)
+QImage VideoCompositor::applyTimeOfDay(const QImage &source, const ColorAdjustments &adj)
 {
     if (source.isNull()) return source;
+    if (!adj.timeOfDayEnabled || adj.timeOfDayIntensity <= 0.001f) return source;
 
     const int w = source.width();
     const int h = source.height();
     if (w <= 0 || h <= 0) return source;
 
-    float clampedSlider = std::clamp(sliderValue, 0.0f, 1.0f);
+    float targetTime = std::clamp(adj.timeOfDay, 0.0f, 1.0f);
+    float sourceTime = 0.60f;
+    if (adj.timeOfDaySourceMode == TimeOfDaySourceMode::Auto) {
+        sourceTime = TimeOfDayFilter::EstimateSourceTime(source);
+    } else {
+        sourceTime = std::clamp(adj.timeOfDaySourceTime, 0.0f, 1.0f);
+    }
 
-    // Fast-path: Noon / Day mode (0.60f) is exact identity (0ms cost)
-    if (std::abs(clampedSlider - 0.60f) < 0.005f) {
+    // Fast-path: When source and target match and all biases are neutral
+    if (std::abs(sourceTime - targetTime) < 0.005f &&
+        std::abs(adj.timeOfDayExposureBias) < 0.01f &&
+        std::abs(adj.timeOfDayHighlightWarmth) < 0.01f &&
+        std::abs(adj.timeOfDayShadowCoolness) < 0.01f) {
         return source;
     }
 
-    TimeProfile profile = TimeOfDayFilter::CalculateProfile(clampedSlider);
+    RelativeSettings settings;
+    settings.intensity = std::clamp(adj.timeOfDayIntensity, 0.0f, 1.0f);
+    settings.skinProtectionFactor = std::clamp(adj.timeOfDaySkinProtection, 0.0f, 1.0f);
+    settings.skyInfluenceFactor = std::clamp(adj.timeOfDaySkyInfluence, 0.0f, 1.0f);
+    settings.highlightWarmthBias = std::clamp(adj.timeOfDayHighlightWarmth, -1.0f, 1.0f);
+    settings.shadowCoolnessBias = std::clamp(adj.timeOfDayShadowCoolness, -1.0f, 1.0f);
+    settings.exposureBias = std::clamp(adj.timeOfDayExposureBias, -2.0f, 2.0f);
+    settings.lutStrengthFactor = std::clamp(adj.timeOfDayLutStrength, 0.0f, 1.0f);
+
+    TimeProfile srcProfile = TimeOfDayFilter::CalculateProfile(sourceTime);
+    TimeProfile tgtProfile = TimeOfDayFilter::CalculateProfile(targetTime);
+    TimeProfile profile = TimeOfDayFilter::CalculateRelativeProfile(sourceTime, targetTime, settings);
 
     auto toSrgbByte = [](float lin) -> uint8_t {
         int idx = std::clamp(static_cast<int>(lin * 4095.0f + 0.5f), 0, 4095);
@@ -417,10 +438,36 @@ QImage VideoCompositor::applyTimeOfDay(const QImage &source, float sliderValue)
     };
 
     const float expMultiplier = std::pow(2.0f, profile.exposureEV);
-    const auto wbGains = TimeOfDayFilter::KelvinToRGB(profile.temperature, profile.tint);
-    const auto shadowGains = TimeOfDayFilter::KelvinToRGB(profile.shadowTemperature, profile.shadowTint);
-    const auto midtoneGains = TimeOfDayFilter::KelvinToRGB(profile.midtoneTemperature, 0.0f);
-    const auto highlightGains = TimeOfDayFilter::KelvinToRGB(profile.highlightTemperature, 0.0f);
+
+    auto srcWB = TimeOfDayFilter::KelvinToRGB(srcProfile.temperature, srcProfile.tint);
+    auto tgtWB = TimeOfDayFilter::KelvinToRGB(tgtProfile.temperature, tgtProfile.tint);
+
+    auto srcShadow = TimeOfDayFilter::KelvinToRGB(srcProfile.shadowTemperature, srcProfile.shadowTint);
+    auto tgtShadow = TimeOfDayFilter::KelvinToRGB(tgtProfile.shadowTemperature, tgtProfile.shadowTint);
+
+    auto srcMid = TimeOfDayFilter::KelvinToRGB(srcProfile.midtoneTemperature, 0.0f);
+    auto tgtMid = TimeOfDayFilter::KelvinToRGB(tgtProfile.midtoneTemperature, 0.0f);
+
+    auto srcHi = TimeOfDayFilter::KelvinToRGB(srcProfile.highlightTemperature, 0.0f);
+    auto tgtHi = TimeOfDayFilter::KelvinToRGB(tgtProfile.highlightTemperature, 0.0f);
+
+    std::array<float, 3> wbGains;
+    std::array<float, 3> shadowGains;
+    std::array<float, 3> midtoneGains;
+    std::array<float, 3> highlightGains;
+
+    for (int i = 0; i < 3; ++i) {
+        wbGains[i] = tgtWB[i] / std::max(0.01f, srcWB[i]);
+        shadowGains[i] = tgtShadow[i] / std::max(0.01f, srcShadow[i]);
+        midtoneGains[i] = (tgtMid[i] * tgtProfile.midtoneGain) / std::max(0.01f, srcMid[i] * srcProfile.midtoneGain);
+        highlightGains[i] = (tgtHi[i] * tgtProfile.highlightGain) / std::max(0.01f, srcHi[i] * srcProfile.highlightGain);
+    }
+
+    highlightGains[0] *= (1.0f + settings.highlightWarmthBias * 0.35f);
+    highlightGains[2] *= (1.0f - settings.highlightWarmthBias * 0.35f);
+
+    shadowGains[0] *= (1.0f - settings.shadowCoolnessBias * 0.30f);
+    shadowGains[2] *= (1.0f + settings.shadowCoolnessBias * 0.30f);
 
     const float expWbR = expMultiplier * wbGains[0];
     const float expWbG = expMultiplier * wbGains[1];
@@ -431,13 +478,13 @@ QImage VideoCompositor::applyTimeOfDay(const QImage &source, float sliderValue)
     const float shG = shadowGains[1] * shLift;
     const float shB = shadowGains[2] * shLift;
 
-    const float midR = midtoneGains[0] * profile.midtoneGain;
-    const float midG = midtoneGains[1] * profile.midtoneGain;
-    const float midB = midtoneGains[2] * profile.midtoneGain;
+    const float midR = midtoneGains[0];
+    const float midG = midtoneGains[1];
+    const float midB = midtoneGains[2];
 
-    const float hiR = highlightGains[0] * profile.highlightGain;
-    const float hiG = highlightGains[1] * profile.highlightGain;
-    const float hiB = highlightGains[2] * profile.highlightGain;
+    const float hiR = highlightGains[0];
+    const float hiG = highlightGains[1];
+    const float hiB = highlightGains[2];
 
     // 3D LUT cached profile lookup
     const bool applyLut = (profile.lutStrength > 0.001f);
@@ -463,6 +510,8 @@ QImage VideoCompositor::applyTimeOfDay(const QImage &source, float sliderValue)
     const uchar *srcBits = inputImg.constBits();
     uchar *dstBits = result.bits();
 
+    const float intensityVal = settings.intensity;
+
     PersistentWorkerPool::instance().parallelFor(h, [&](int yStart, int yEnd) {
         for (int y = yStart; y < yEnd; ++y) {
             const uint32_t *srcLine = reinterpret_cast<const uint32_t*>(srcBits + y * srcBpl);
@@ -485,6 +534,10 @@ QImage VideoCompositor::applyTimeOfDay(const QImage &source, float sliderValue)
                 float rLin = s_srgbLuts.srgbToLinear[r8];
                 float gLin = s_srgbLuts.srgbToLinear[g8];
                 float bLin = s_srgbLuts.srgbToLinear[b8];
+
+                float origRLin = rLin;
+                float origGLin = gLin;
+                float origBLin = bLin;
 
                 // 2. Soft Skin Tone Protection Mask (fast rejection for non-skin pixels)
                 float skinMask = 0.0f;
@@ -595,7 +648,14 @@ QImage VideoCompositor::applyTimeOfDay(const QImage &source, float sliderValue)
                     bLin = bLin * (1.0f - profile.highlightRolloff) + filmicB * profile.highlightRolloff;
                 }
 
-                // 11. Encode Linear Light back to sRGB Output
+                // 11. Relighting Strength / Intensity Blending
+                if (intensityVal < 0.999f) {
+                    rLin = origRLin * (1.0f - intensityVal) + rLin * intensityVal;
+                    gLin = origGLin * (1.0f - intensityVal) + gLin * intensityVal;
+                    bLin = origBLin * (1.0f - intensityVal) + bLin * intensityVal;
+                }
+
+                // 12. Encode Linear Light back to sRGB Output
                 uint32_t outR = toSrgbByte(rLin);
                 uint32_t outG = toSrgbByte(gLin);
                 uint32_t outB = toSrgbByte(bLin);
@@ -608,6 +668,17 @@ QImage VideoCompositor::applyTimeOfDay(const QImage &source, float sliderValue)
     return result;
 }
 
+QImage VideoCompositor::applyTimeOfDay(const QImage &source, float sliderValue)
+{
+    ColorAdjustments adj;
+    adj.timeOfDayEnabled = true;
+    adj.timeOfDay = sliderValue;
+    adj.timeOfDaySourceMode = TimeOfDaySourceMode::Manual;
+    adj.timeOfDaySourceTime = 0.60f;
+    adj.timeOfDayIntensity = 1.0f;
+    return applyTimeOfDay(source, adj);
+}
+
 QImage VideoCompositor::applyColorAdjustments(const QImage &source, const ColorAdjustments &adj)
 {
     if (adj.isIdentity() || source.isNull()) {
@@ -616,7 +687,7 @@ QImage VideoCompositor::applyColorAdjustments(const QImage &source, const ColorA
 
     QImage working = source;
     if (adj.timeOfDayEnabled) {
-        working = applyTimeOfDay(working, adj.timeOfDay);
+        working = applyTimeOfDay(working, adj);
     }
 
     // Check if slider/curves adjustments are active

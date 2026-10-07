@@ -28,6 +28,7 @@ uniform float u_skyExposureDrop;
 uniform float u_skinProtection;
 uniform float u_lutStrength;
 uniform float u_timeOfDay;
+uniform float u_intensity;
 
 // -----------------------------------------------------------------------------
 // Accurate Color Space Conversions (Rec.709 / sRGB <-> Linear RGB)
@@ -180,7 +181,15 @@ void main()
     }
 
     // -------------------------------------------------------------------------
-    // 11. Encode Linear Light back to sRGB / Rec.709 Output
+    // 11. Relighting Strength / Intensity Blending
+    // -------------------------------------------------------------------------
+    float intensity = clamp(u_intensity, 0.0, 1.0);
+    if (intensity < 0.999) {
+        linearColor = mix(srgbToLinear(origSrgb), linearColor, intensity);
+    }
+
+    // -------------------------------------------------------------------------
+    // 12. Encode Linear Light back to sRGB / Rec.709 Output
     // -------------------------------------------------------------------------
     vec3 finalSrgb = linearToSrgb(linearColor);
     FragColor = vec4(finalSrgb, texColor.a);

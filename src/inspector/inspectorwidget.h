@@ -115,8 +115,29 @@ public slots:
     // Time of Day slots
     void onClipTimeOfDayToggled(bool enabled);
     void onClipTimeOfDayChanged(int value);
+    void onClipTimeOfDaySourceChanged(int index);
+    void onClipTimeOfDayIntensityChanged(int value);
+    void onClipTimeOfDayAdvancedToggled(bool checked);
+    void onClipTimeOfDaySkinProtectionChanged(int value);
+    void onClipTimeOfDaySkyInfluenceChanged(int value);
+    void onClipTimeOfDayHighlightWarmthChanged(int value);
+    void onClipTimeOfDayShadowCoolnessChanged(int value);
+    void onClipTimeOfDayExposureBiasChanged(int value);
+    void onClipTimeOfDayLutStrengthChanged(int value);
+    void onClipTimeOfDayResetAdvancedClicked();
+
     void onGlobalTimeOfDayToggled(bool enabled);
     void onGlobalTimeOfDayChanged(int value);
+    void onGlobalTimeOfDaySourceChanged(int index);
+    void onGlobalTimeOfDayIntensityChanged(int value);
+    void onGlobalTimeOfDayAdvancedToggled(bool checked);
+    void onGlobalTimeOfDaySkinProtectionChanged(int value);
+    void onGlobalTimeOfDaySkyInfluenceChanged(int value);
+    void onGlobalTimeOfDayHighlightWarmthChanged(int value);
+    void onGlobalTimeOfDayShadowCoolnessChanged(int value);
+    void onGlobalTimeOfDayExposureBiasChanged(int value);
+    void onGlobalTimeOfDayLutStrengthChanged(int value);
+    void onGlobalTimeOfDayResetAdvancedClicked();
 
 private slots:
     void onOpacityChanged(int value);
@@ -282,14 +303,34 @@ private:
     // Clip Time of Day controls
     QGroupBox *m_clipTimeOfDayGroup = nullptr;
     QCheckBox *m_clipTimeOfDayCheck = nullptr;
+    QComboBox *m_clipTodSourceCombo = nullptr;
     QSlider *m_clipTimeOfDaySlider = nullptr;
     QLabel *m_clipTimeOfDayBadge = nullptr;
+    QSlider *m_clipTodIntensitySlider = nullptr;
+    QLabel *m_clipTodIntensityLabel = nullptr;
     QPushButton *m_clipPresetNightBtn = nullptr;
     QPushButton *m_clipPresetBlueHourBtn = nullptr;
     QPushButton *m_clipPresetMorningBtn = nullptr;
     QPushButton *m_clipPresetDayBtn = nullptr;
     QPushButton *m_clipPresetGoldenBtn = nullptr;
     QPushButton *m_clipPresetSunsetBtn = nullptr;
+
+    // Clip Advanced Collapsible Panel
+    QPushButton *m_clipTodAdvancedToggleBtn = nullptr;
+    QWidget *m_clipTodAdvancedContainer = nullptr;
+    QSlider *m_clipTodSkinProtectionSlider = nullptr;
+    QLabel *m_clipTodSkinProtectionLabel = nullptr;
+    QSlider *m_clipTodSkyInfluenceSlider = nullptr;
+    QLabel *m_clipTodSkyInfluenceLabel = nullptr;
+    QSlider *m_clipTodHighlightWarmthSlider = nullptr;
+    QLabel *m_clipTodHighlightWarmthLabel = nullptr;
+    QSlider *m_clipTodShadowCoolnessSlider = nullptr;
+    QLabel *m_clipTodShadowCoolnessLabel = nullptr;
+    QSlider *m_clipTodExposureBiasSlider = nullptr;
+    QLabel *m_clipTodExposureBiasLabel = nullptr;
+    QSlider *m_clipTodLutStrengthSlider = nullptr;
+    QLabel *m_clipTodLutStrengthLabel = nullptr;
+    QPushButton *m_clipTodResetAdvancedBtn = nullptr;
 
     // Effects Stack controls
     QWidget *m_effectsSection = nullptr;
@@ -345,14 +386,34 @@ private:
     // Global Time of Day controls
     QGroupBox *m_globalTimeOfDayGroup = nullptr;
     QCheckBox *m_globalTimeOfDayCheck = nullptr;
+    QComboBox *m_globalTodSourceCombo = nullptr;
     QSlider *m_globalTimeOfDaySlider = nullptr;
     QLabel *m_globalTimeOfDayBadge = nullptr;
+    QSlider *m_globalTodIntensitySlider = nullptr;
+    QLabel *m_globalTodIntensityLabel = nullptr;
     QPushButton *m_globalPresetNightBtn = nullptr;
     QPushButton *m_globalPresetBlueHourBtn = nullptr;
     QPushButton *m_globalPresetMorningBtn = nullptr;
     QPushButton *m_globalPresetDayBtn = nullptr;
     QPushButton *m_globalPresetGoldenBtn = nullptr;
     QPushButton *m_globalPresetSunsetBtn = nullptr;
+
+    // Global Advanced Collapsible Panel
+    QPushButton *m_globalTodAdvancedToggleBtn = nullptr;
+    QWidget *m_globalTodAdvancedContainer = nullptr;
+    QSlider *m_globalTodSkinProtectionSlider = nullptr;
+    QLabel *m_globalTodSkinProtectionLabel = nullptr;
+    QSlider *m_globalTodSkyInfluenceSlider = nullptr;
+    QLabel *m_globalTodSkyInfluenceLabel = nullptr;
+    QSlider *m_globalTodHighlightWarmthSlider = nullptr;
+    QLabel *m_globalTodHighlightWarmthLabel = nullptr;
+    QSlider *m_globalTodShadowCoolnessSlider = nullptr;
+    QLabel *m_globalTodShadowCoolnessLabel = nullptr;
+    QSlider *m_globalTodExposureBiasSlider = nullptr;
+    QLabel *m_globalTodExposureBiasLabel = nullptr;
+    QSlider *m_globalTodLutStrengthSlider = nullptr;
+    QLabel *m_globalTodLutStrengthLabel = nullptr;
+    QPushButton *m_globalTodResetAdvancedBtn = nullptr;
 
     void updateTimeOfDayBadge(QLabel *badge, float val);
 
