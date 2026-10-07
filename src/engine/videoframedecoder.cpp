@@ -99,7 +99,7 @@ VideoFrameDecoder::DecoderContext* VideoFrameDecoder::getOrCreateContext(const Q
     }
 
     // Enable multithreaded slice & frame decoding for high performance on 1080p / 4K
-    codecCtx->thread_count = qBound(1, QThread::idealThreadCount(), 16);
+    codecCtx->thread_count = qBound(1, QThread::idealThreadCount(), 8);
     codecCtx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
 
     if (avcodec_open2(codecCtx, codec, nullptr) != 0) {
@@ -117,6 +117,25 @@ VideoFrameDecoder::DecoderContext* VideoFrameDecoder::getOrCreateContext(const Q
     ctx->height = codecPar->height;
     if (fmtCtx->duration != AV_NOPTS_VALUE) {
         ctx->durationMs = (fmtCtx->duration * 1000) / AV_TIME_BASE;
+    }
+
+    AVStream *st = fmtCtx->streams[videoStreamIdx];
+    double fps = 30.0;
+    if (st->avg_frame_rate.num > 0 && st->avg_frame_rate.den > 0) {
+        fps = av_q2d(st->avg_frame_rate);
+    } else if (st->r_frame_rate.num > 0 && st->r_frame_rate.den > 0) {
+        fps = av_q2d(st->r_frame_rate);
+    }
+    if (fps <= 0.0 || fps > 240.0 || std::isnan(fps)) {
+        fps = 30.0;
+    }
+    ctx->fps = fps;
+
+    double tb = av_q2d(ctx->timeBase);
+    if (tb > 0.0) {
+        ctx->oneFramePts = qMax<int64_t>(1, static_cast<int64_t>((1.0 / fps) / tb + 0.5));
+    } else {
+        ctx->oneFramePts = 1;
     }
 
     map.insert(filePath, ctx);
@@ -207,36 +226,43 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
         return m_imageCache.value(filePath);
     }
 
-    // 2. Quantize timestamp to ~30fps frame interval (33ms) for caching
-    qint64 quantMs = (timestampMs / 33) * 33;
     bool isThumb = (targetSize.isValid() && targetSize.width() > 0 && targetSize.width() <= 320 && targetSize.height() <= 320);
     int tw = isThumb ? targetSize.width() : 0;
     int th = isThumb ? targetSize.height() : 0;
-    QString cacheKey = QString("%1_%2_%3x%4").arg(filePath).arg(quantMs).arg(tw).arg(th);
-    if (QImage *cached = m_frameCache.object(cacheKey)) {
-        return *cached;
-    }
 
     DecoderContext *ctx = getOrCreateContext(filePath, isThumb);
     if (!ctx) {
         return QImage();
     }
 
-    // Calculate target PTS
+    // 2. Deterministic frame index based on stream FPS
     double tb = av_q2d(ctx->timeBase);
-    int64_t targetPts = (static_cast<double>(timestampMs) / 1000.0) / tb;
-    int64_t oneSecPts = static_cast<int64_t>(1.0 / tb);
-    int64_t backwardThresholdPts = static_cast<int64_t>(0.35 / tb); // 350ms backward threshold
+    if (tb <= 0.0) tb = 0.001;
+    int64_t targetFrameIdx = qRound64((static_cast<double>(timestampMs) * ctx->fps) / 1000.0);
+    if (targetFrameIdx < 0) targetFrameIdx = 0;
 
-    // Only seek if we have no last PTS, or if target is more than 350ms in the past,
-    // or more than 1.5 seconds in the future
+    QString cacheKey = QString("%1_f%2_%3x%4").arg(filePath).arg(targetFrameIdx).arg(tw).arg(th);
+    if (QImage *cached = m_frameCache.object(cacheKey)) {
+        return *cached;
+    }
+
+    int64_t targetPts = static_cast<int64_t>((static_cast<double>(timestampMs) / 1000.0) / tb + 0.5);
+    int64_t halfFramePts = qMax<int64_t>(1, static_cast<int64_t>((0.5 / ctx->fps) / tb + 0.5));
+    int64_t maxForwardSkipPts = static_cast<int64_t>(1.5 / tb);
+
+    // Precise seeking decision:
+    // - Never decoded yet (lastDecodedPts < 0)
+    // - Target is earlier than current decoder position (backward scrub/jump)
+    // - Target is more than 1.5 seconds in the future (fast forward / long jump)
     bool needSeek = (ctx->lastDecodedPts < 0 ||
-                     (ctx->lastDecodedPts - targetPts) > backwardThresholdPts ||
-                     (targetPts - ctx->lastDecodedPts) > static_cast<int64_t>(1.5 * oneSecPts));
+                     targetPts < (ctx->lastDecodedPts - halfFramePts) ||
+                     (targetPts - ctx->lastDecodedPts) > maxForwardSkipPts);
 
     if (needSeek) {
         avcodec_flush_buffers(ctx->codecCtx);
-        av_seek_frame(ctx->fmtCtx, ctx->videoStreamIdx, targetPts, AVSEEK_FLAG_BACKWARD);
+        if (av_seek_frame(ctx->fmtCtx, ctx->videoStreamIdx, targetPts, AVSEEK_FLAG_BACKWARD) < 0) {
+            av_seek_frame(ctx->fmtCtx, ctx->videoStreamIdx, 0, AVSEEK_FLAG_BACKWARD);
+        }
         ctx->lastDecodedPts = -1;
     }
 
@@ -250,7 +276,6 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
         int outH = f->height;
         if (targetSize.isValid() && targetSize.width() > 0 && targetSize.height() > 0) {
             if (isThumb) {
-                // Downscale for thumbnails preserving aspect ratio strictly
                 QSize thumbSize = QSize(f->width, f->height).scaled(targetSize, Qt::KeepAspectRatio);
                 outW = thumbSize.width();
                 outH = thumbSize.height();
@@ -270,57 +295,75 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
         return img;
     };
 
-    // First: drain any pending frames from the decoder buffer
-    while (!needSeek && avcodec_receive_frame(ctx->codecCtx, frame) == 0) {
-        int64_t pts = frame->pts != AV_NOPTS_VALUE ? frame->pts : frame->pkt_dts;
-        ctx->lastDecodedPts = pts;
-        qint64 frameMs = static_cast<qint64>(pts * tb * 1000.0);
-        qint64 fQuant = (frameMs / 33) * 33;
-        QString fKey = QString("%1_%2_%3x%4").arg(filePath).arg(fQuant).arg(tw).arg(th);
+    int loopCount = 0;
+    const int maxLoops = 300; // Guard against corrupt streams
 
-        if (pts >= targetPts - 2) {
-            result = convertFrame(frame);
-            ctx->lastGoodFrame = result;
-            m_frameCache.insert(fKey, new QImage(result), 1);
-            found = true;
-            break;
-        }
-    }
+    while (!found && loopCount++ < maxLoops) {
+        int ret = avcodec_receive_frame(ctx->codecCtx, frame);
+        if (ret == 0) {
+            int64_t pts = frame->pts != AV_NOPTS_VALUE ? frame->pts : frame->pkt_dts;
+            if (pts == AV_NOPTS_VALUE) {
+                pts = ctx->lastDecodedPts >= 0 ? ctx->lastDecodedPts + ctx->oneFramePts : targetPts;
+            }
+            ctx->lastDecodedPts = pts;
 
-    // Second: read packets from container until target frame is reached
-    while (!found && av_read_frame(ctx->fmtCtx, pkt) >= 0) {
-        if (pkt->stream_index == ctx->videoStreamIdx) {
-            int ret = avcodec_send_packet(ctx->codecCtx, pkt);
-            if (ret == 0) {
-                while (avcodec_receive_frame(ctx->codecCtx, frame) == 0) {
-                    int64_t pts = frame->pts != AV_NOPTS_VALUE ? frame->pts : frame->pkt_dts;
-                    ctx->lastDecodedPts = pts;
-                    qint64 frameMs = static_cast<qint64>(pts * tb * 1000.0);
-                    qint64 fQuant = (frameMs / 33) * 33;
-                    QString fKey = QString("%1_%2_%3x%4").arg(filePath).arg(fQuant).arg(tw).arg(th);
+            double ptsSec = pts * tb;
+            int64_t fIdx = qRound64(ptsSec * ctx->fps);
 
-                    if (!needSeek || pts >= targetPts - 2) {
-                        result = convertFrame(frame);
-                        ctx->lastGoodFrame = result;
-                        m_frameCache.insert(fKey, new QImage(result), 1);
-                        found = true;
-                        break;
-                    }
+            // Acceptance check: reached target frame index or target PTS
+            if (fIdx >= targetFrameIdx || pts >= targetPts - halfFramePts) {
+                result = convertFrame(frame);
+                ctx->lastGoodFrame = result;
+                QString fKey = QString("%1_f%2_%3x%4").arg(filePath).arg(fIdx).arg(tw).arg(th);
+                m_frameCache.insert(fKey, new QImage(result), 1);
+                if (fIdx != targetFrameIdx) {
+                    m_frameCache.insert(cacheKey, new QImage(result), 1);
+                }
+                found = true;
+                break;
+            } else {
+                // If within 2 frames of target during forward seek catchup, cache it for fast scrubbing
+                if (targetFrameIdx - fIdx <= 2) {
+                    QImage intermediate = convertFrame(frame);
+                    ctx->lastGoodFrame = intermediate;
+                    QString fKey = QString("%1_f%2_%3x%4").arg(filePath).arg(fIdx).arg(tw).arg(th);
+                    m_frameCache.insert(fKey, new QImage(intermediate), 1);
                 }
             }
+        } else if (ret == AVERROR(EAGAIN)) {
+            // Need more packets from container
+            bool packetFed = false;
+            while (av_read_frame(ctx->fmtCtx, pkt) >= 0) {
+                if (pkt->stream_index == ctx->videoStreamIdx) {
+                    avcodec_send_packet(ctx->codecCtx, pkt);
+                    av_packet_unref(pkt);
+                    packetFed = true;
+                    break;
+                }
+                av_packet_unref(pkt);
+            }
+            if (!packetFed) {
+                // EOF reached - flush decoder
+                avcodec_send_packet(ctx->codecCtx, nullptr);
+                if (avcodec_receive_frame(ctx->codecCtx, frame) == 0) {
+                    result = convertFrame(frame);
+                    ctx->lastGoodFrame = result;
+                    found = true;
+                }
+                break;
+            }
+        } else {
+            // AVERROR_EOF or other error
+            break;
         }
-        av_packet_unref(pkt);
-        if (found) break;
     }
 
     av_packet_free(&pkt);
     av_frame_free(&frame);
 
-    // If decoding didn't find a new frame (e.g. at end of stream or read error),
-    // fallback to lastGoodFrame to completely prevent black frame flickering!
+    // Fallback to lastGoodFrame to prevent black flicker, but NEVER poison the cache!
     if (result.isNull() && !ctx->lastGoodFrame.isNull()) {
         result = ctx->lastGoodFrame;
-        m_frameCache.insert(cacheKey, new QImage(result), 1);
     }
 
     return result;

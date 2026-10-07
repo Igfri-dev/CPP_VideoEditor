@@ -30,6 +30,8 @@ private:
         AVCodecContext *codecCtx = nullptr;
         int videoStreamIdx = -1;
         AVRational timeBase = {1, 1000};
+        double fps = 30.0;
+        int64_t oneFramePts = 1;
         qint64 durationMs = 0;
         int width = 0;
         int height = 0;

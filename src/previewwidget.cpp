@@ -1404,7 +1404,6 @@ void PreviewWidget::setPosition(qint64 positionMs)
     if (m_isPlaying) {
         m_playbackClock.restart();
     }
-    m_lastRenderedFrameIndex = m_currentPositionMs / 33;
     if (m_audioEngine) {
         m_audioEngine->setPosition(m_currentPositionMs);
     }
@@ -1422,7 +1421,6 @@ void PreviewWidget::play()
     }
 
     m_isPlaying = true;
-    m_lastRenderedFrameIndex = -1;
     m_playbackStartMs = m_currentPositionMs;
     m_playbackClock.start();
     if (m_monitorWidget) {
@@ -1559,12 +1557,7 @@ void PreviewWidget::onVideoTimerTick()
     m_currentPositionMs = targetMs;
     emit playheadMoved(m_currentPositionMs);
     updateTimecodeLabel();
-
-    qint64 frameIdx = m_currentPositionMs / 33;
-    if (frameIdx != m_lastRenderedFrameIndex) {
-        m_lastRenderedFrameIndex = frameIdx;
-        renderCurrentFrame();
-    }
+    renderCurrentFrame();
 }
 
 void PreviewWidget::setSelectedClipId(qint64 clipId)

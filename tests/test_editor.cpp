@@ -162,6 +162,20 @@ void testContinuousVideoPlayback()
     assert(nullCount == 0);
     std::cout << "  -> Continuous forward playback verified: 0 null/flicker frames across 31 sequential frames." << std::endl;
 
+    // 3. Verify backward scrubbing accuracy & zero frame stickiness / cache poisoning
+    QImage frame1000 = VideoFrameDecoder::instance().getFrame(videoPath, 1000, QSize(640, 360));
+    assert(!frame1000.isNull());
+    QImage frame200 = VideoFrameDecoder::instance().getFrame(videoPath, 200, QSize(640, 360));
+    assert(!frame200.isNull());
+    // Frame at 200ms must not be an identical copy of frame at 1000ms
+    assert(frame200 != frame1000);
+    QImage frame100 = VideoFrameDecoder::instance().getFrame(videoPath, 100, QSize(640, 360));
+    assert(!frame100.isNull());
+    // Forward resume after backward scrub
+    QImage frame300 = VideoFrameDecoder::instance().getFrame(videoPath, 300, QSize(640, 360));
+    assert(!frame300.isNull());
+    std::cout << "  -> Backward seek & forward resume verified: frame accuracy maintained without freezing." << std::endl;
+
     QString starcraftPath = "/Users/hans/Downloads/STARCRAFT Announce Cinematic Dominion - StarCraft (1080p).mp4";
     if (QFile::exists(starcraftPath)) {
         std::cout << "  [1080p Verification] Testing Starcraft 1080p video decoding & real-time sync..." << std::endl;

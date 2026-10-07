@@ -270,7 +270,6 @@ private:
     AudioEngine *m_audioEngine = nullptr;
 
     qint64 m_currentPositionMs = 0;
-    qint64 m_lastRenderedFrameIndex = -1;
     bool m_isPlaying = false;
     bool m_isLooping = false;
     QTimer m_videoTimer;
