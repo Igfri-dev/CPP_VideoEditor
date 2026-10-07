@@ -261,84 +261,59 @@ QImage VideoCompositor::applyTimeOfDay(const QImage &source, float sliderValue)
 
     float clampedSlider = std::clamp(sliderValue, 0.0f, 1.0f);
 
-    // Fast-path: Day mode (0.66f) is identity (exposure=0, tint=white, skyBlend=0, nightFactor=0)
-    if (std::abs(clampedSlider - 0.66f) < 0.005f) {
+    // Fast-path: Noon / Day mode (0.60f) is exact identity (0ms cost)
+    if (std::abs(clampedSlider - 0.60f) < 0.005f) {
         return source;
     }
 
     TimeProfile profile = TimeOfDayFilter::CalculateProfile(clampedSlider);
 
-    float exposureMultiplier = std::pow(2.0f, profile.exposure);
-    float multR = exposureMultiplier * profile.tint[0];
-    float multG = exposureMultiplier * profile.tint[1];
-    float multB = exposureMultiplier * profile.tint[2];
-    float skyBlend = profile.skyBlend;
-
-    float nightFactor = (clampedSlider < 0.33f) ? (0.33f - clampedSlider) / 0.33f : 0.0f;
-
-    // Precalculate 8-bit lookup tables for non-sky / ground scanlines
-    uint32_t lutR[256];
-    uint32_t lutG[256];
-    uint32_t lutB[256];
+    // Precalculate sRGB -> Linear lookup table (256 entries)
+    float srgbToLinearLut[256];
     for (int i = 0; i < 256; ++i) {
-        lutR[i] = static_cast<uint32_t>(std::clamp(static_cast<int>(i * multR + 0.5f), 0, 255));
-        lutG[i] = static_cast<uint32_t>(std::clamp(static_cast<int>(i * multG + 0.5f), 0, 255));
-        lutB[i] = static_cast<uint32_t>(std::clamp(static_cast<int>(i * multB + 0.5f), 0, 255));
+        float c = i * (1.0f / 255.0f);
+        srgbToLinearLut[i] = (c <= 0.04045f) ? (c / 12.92f) : std::pow((c + 0.055f) / 1.055f, 2.4f);
     }
 
-    // Celestial sky gradient keys (Zenith vs Horizon)
-    const float nightSkyZenith[3]    = {0.010f, 0.018f, 0.055f};
-    const float nightSkyHorizon[3]   = {0.030f, 0.055f, 0.130f};
-
-    const float morningSkyZenith[3]  = {0.220f, 0.380f, 0.680f};
-    const float morningSkyHorizon[3] = {0.960f, 0.620f, 0.420f};
-
-    const float daySkyZenith[3]      = {0.240f, 0.540f, 0.920f};
-    const float daySkyHorizon[3]     = {0.720f, 0.860f, 0.990f};
-
-    const float sunsetSkyZenith[3]   = {0.160f, 0.100f, 0.380f};
-    const float sunsetSkyHorizon[3]  = {0.960f, 0.360f, 0.120f};
-
-    float skyZenith[3];
-    float skyHorizon[3];
-
-    if (clampedSlider <= 0.33f) {
-        float t = clampedSlider / 0.33f;
-        for (int i = 0; i < 3; ++i) {
-            skyZenith[i]  = nightSkyZenith[i]  + t * (morningSkyZenith[i]  - nightSkyZenith[i]);
-            skyHorizon[i] = nightSkyHorizon[i] + t * (morningSkyHorizon[i] - nightSkyHorizon[i]);
-        }
-    } else if (clampedSlider <= 0.66f) {
-        float t = (clampedSlider - 0.33f) / 0.33f;
-        for (int i = 0; i < 3; ++i) {
-            skyZenith[i]  = morningSkyZenith[i]  + t * (daySkyZenith[i]  - morningSkyZenith[i]);
-            skyHorizon[i] = morningSkyHorizon[i] + t * (daySkyHorizon[i] - morningSkyHorizon[i]);
-        }
-    } else {
-        float t = (clampedSlider - 0.66f) / 0.34f;
-        for (int i = 0; i < 3; ++i) {
-            skyZenith[i]  = daySkyZenith[i]  + t * (sunsetSkyZenith[i]  - daySkyZenith[i]);
-            skyHorizon[i] = daySkyHorizon[i] + t * (sunsetSkyHorizon[i] - daySkyHorizon[i]);
-        }
+    // Precalculate Linear -> sRGB lookup table (4096 entries) for zero-pow inner loop
+    uint8_t linearToSrgbLut[4096];
+    for (int i = 0; i < 4096; ++i) {
+        float lin = i * (1.0f / 4095.0f);
+        float s = (lin <= 0.0031308f) ? (lin * 12.92f) : (1.055f * std::pow(lin, 1.0f / 2.4f) - 0.055f);
+        linearToSrgbLut[i] = static_cast<uint8_t>(std::clamp(static_cast<int>(s * 255.0f + 0.5f), 0, 255));
     }
+
+    auto toSrgbByte = [&](float lin) -> uint8_t {
+        int idx = std::clamp(static_cast<int>(lin * 4095.0f + 0.5f), 0, 4095);
+        return linearToSrgbLut[idx];
+    };
 
     auto smoothstep = [](float edge0, float edge1, float x) -> float {
         float t = std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
         return t * t * (3.0f - 2.0f * t);
     };
 
-    // Precalculate vertical gradient and height prior tables for height h
-    std::vector<float> vPriorTable(h);
-    std::vector<float> skyRTable(h);
-    std::vector<float> skyGTable(h);
-    std::vector<float> skyBTable(h);
+    auto acesFilm = [](float x) -> float {
+        float num = x * (2.51f * x + 0.03f);
+        float den = x * (2.43f * x + 0.59f) + 0.14f;
+        return std::clamp(num / den, 0.0f, 1.0f);
+    };
 
+    const float expMultiplier = std::pow(2.0f, profile.exposureEV);
+    const auto wbGains = TimeOfDayFilter::KelvinToRGB(profile.temperature, profile.tint);
+    const auto shadowGains = TimeOfDayFilter::KelvinToRGB(profile.shadowTemperature, profile.shadowTint);
+    const auto midtoneGains = TimeOfDayFilter::KelvinToRGB(profile.midtoneTemperature, 0.0f);
+    const auto highlightGains = TimeOfDayFilter::KelvinToRGB(profile.highlightTemperature, 0.0f);
+
+    const float expWbR = expMultiplier * wbGains[0];
+    const float expWbG = expMultiplier * wbGains[1];
+    const float expWbB = expMultiplier * wbGains[2];
+
+    // Precalculate vertical sky prior table
+    std::vector<float> vPriorTable(h);
     for (int y = 0; y < h; ++y) {
         float v = (h > 1) ? static_cast<float>(h - 1 - y) / (h - 1) : 1.0f;
-        vPriorTable[y] = smoothstep(0.20f, 0.75f, v);
-        skyRTable[y] = skyHorizon[0] + v * (skyZenith[0] - skyHorizon[0]);
-        skyGTable[y] = skyHorizon[1] + v * (skyZenith[1] - skyHorizon[1]);
-        skyBTable[y] = skyHorizon[2] + v * (skyZenith[2] - skyHorizon[2]);
+        vPriorTable[y] = smoothstep(0.15f, 0.75f, v);
     }
 
     const bool hasAlpha = (source.format() == QImage::Format_ARGB32 || source.format() == QImage::Format_ARGB32_Premultiplied);
@@ -351,13 +326,8 @@ QImage VideoCompositor::applyTimeOfDay(const QImage &source, float sliderValue)
     const uchar *srcBits = inputImg.constBits();
     uchar *dstBits = result.bits();
 
-    const float invEdgeDiff = 1.0f / (0.85f - 0.40f);
-    const float nWeight = nightFactor * 0.50f;
-    const float invNWeight = 1.0f - nWeight;
-
-    // Multithreaded scanline execution across available CPU cores with pre-detached raw pointers
     const int hardwareCores = static_cast<int>(std::thread::hardware_concurrency());
-    const int numThreads = std::clamp(hardwareCores > 0 ? hardwareCores : 4, 1, 8);
+    const int numThreads = std::clamp(hardwareCores > 0 ? hardwareCores : 4, 1, 16);
     std::vector<std::thread> workers;
     workers.reserve(numThreads);
 
@@ -372,61 +342,7 @@ QImage VideoCompositor::applyTimeOfDay(const QImage &source, float sliderValue)
                 const uint32_t *srcLine = reinterpret_cast<const uint32_t*>(srcBits + y * srcBpl);
                 uint32_t *dstLine = reinterpret_cast<uint32_t*>(dstBits + y * dstBpl);
                 float vPrior = vPriorTable[y];
-                float skyRowR = skyRTable[y];
-                float skyRowG = skyGTable[y];
-                float skyRowB = skyBTable[y];
 
-                // Fast-path: ground / non-sky scanlines where vPrior is 0
-                if (vPrior <= 0.0001f) {
-                    if (nightFactor <= 0.0001f) {
-                        if (hasAlpha) {
-                            for (int x = 0; x < w; ++x) {
-                                uint32_t p = srcLine[x];
-                                uint32_t a = p & 0xFF000000;
-                                if (a == 0) {
-                                    dstLine[x] = 0;
-                                } else {
-                                    dstLine[x] = a | (lutR[(p >> 16) & 0xFF] << 16) | (lutG[(p >> 8) & 0xFF] << 8) | lutB[p & 0xFF];
-                                }
-                            }
-                        } else {
-                            for (int x = 0; x < w; ++x) {
-                                uint32_t p = srcLine[x];
-                                dstLine[x] = 0xFF000000 | (lutR[(p >> 16) & 0xFF] << 16) | (lutG[(p >> 8) & 0xFF] << 8) | lutB[p & 0xFF];
-                            }
-                        }
-                    } else {
-                        // Night Purkinje shift on ground
-                        for (int x = 0; x < w; ++x) {
-                            uint32_t p = srcLine[x];
-                            uint32_t a = hasAlpha ? (p & 0xFF000000) : 0xFF000000;
-                            if (hasAlpha && a == 0) {
-                                dstLine[x] = 0;
-                                continue;
-                            }
-                            float r = ((p >> 16) & 0xFF) * (1.0f / 255.0f);
-                            float g = ((p >> 8) & 0xFF) * (1.0f / 255.0f);
-                            float b = (p & 0xFF) * (1.0f / 255.0f);
-                            float gradedR = r * multR;
-                            float gradedG = g * multG;
-                            float gradedB = b * multB;
-                            float scLuma = 0.2126f * gradedR + 0.7152f * gradedG + 0.0722f * gradedB;
-                            float purkR = scLuma * 0.60f;
-                            float purkG = scLuma * 0.82f;
-                            float purkB = scLuma * 1.25f;
-                            float finalR = gradedR * invNWeight + purkR * nWeight;
-                            float finalG = gradedG * invNWeight + purkG * nWeight;
-                            float finalB = gradedB * invNWeight + purkB * nWeight;
-                            dstLine[x] = a |
-                                         (std::clamp(static_cast<int>(finalR * 255.0f + 0.5f), 0, 255) << 16) |
-                                         (std::clamp(static_cast<int>(finalG * 255.0f + 0.5f), 0, 255) << 8) |
-                                          std::clamp(static_cast<int>(finalB * 255.0f + 0.5f), 0, 255);
-                        }
-                    }
-                    continue;
-                }
-
-                // Sky-eligible scanlines (vPrior > 0)
                 for (int x = 0; x < w; ++x) {
                     uint32_t p = srcLine[x];
                     uint32_t a = hasAlpha ? (p & 0xFF000000) : 0xFF000000;
@@ -435,44 +351,128 @@ QImage VideoCompositor::applyTimeOfDay(const QImage &source, float sliderValue)
                         continue;
                     }
 
-                    float r = ((p >> 16) & 0xFF) * (1.0f / 255.0f);
-                    float g = ((p >> 8) & 0xFF) * (1.0f / 255.0f);
-                    float b = (p & 0xFF) * (1.0f / 255.0f);
+                    int r8 = (p >> 16) & 0xFF;
+                    int g8 = (p >> 8) & 0xFF;
+                    int b8 = p & 0xFF;
 
-                    // Procedural sky confidence heuristics
-                    float luma = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-                    float blueDom = std::clamp((b - std::max(r, g * 0.85f)) * 3.0f, 0.0f, 1.0f);
-                    float t = std::clamp((luma - 0.40f) * invEdgeDiff, 0.0f, 1.0f);
-                    float brightThresh = t * t * (3.0f - 2.0f * t);
-                    float skyConfidence = std::max(blueDom * 0.75f, brightThresh * 0.40f);
-                    float skyMask = std::clamp(skyConfidence * vPrior, 0.0f, 1.0f);
+                    // 1. Decode sRGB to Linear
+                    float rLin = srgbToLinearLut[r8];
+                    float gLin = srgbToLinearLut[g8];
+                    float bLin = srgbToLinearLut[b8];
 
-                    float gradedR = r * multR;
-                    float gradedG = g * multG;
-                    float gradedB = b * multB;
-
-                    if (nightFactor > 0.0f) {
-                        float scLuma = 0.2126f * gradedR + 0.7152f * gradedG + 0.0722f * gradedB;
-                        float purkR = scLuma * 0.60f;
-                        float purkG = scLuma * 0.82f;
-                        float purkB = scLuma * 1.25f;
-                        gradedR = gradedR * invNWeight + purkR * nWeight;
-                        gradedG = gradedG * invNWeight + purkG * nWeight;
-                        gradedB = gradedB * invNWeight + purkB * nWeight;
+                    // 2. Soft Skin Tone Protection Mask (fast rejection for non-skin pixels)
+                    float skinMask = 0.0f;
+                    if (profile.skinProtection > 0.001f && r8 > g8 && r8 > b8) {
+                        float rNorm = r8 * (1.0f / 255.0f);
+                        float gNorm = g8 * (1.0f / 255.0f);
+                        float bNorm = b8 * (1.0f / 255.0f);
+                        float ySkin = 0.299f * rNorm + 0.587f * gNorm + 0.114f * bNorm;
+                        float cb = -0.168736f * rNorm - 0.331264f * gNorm + 0.500000f * bNorm;
+                        float cr =  0.500000f * rNorm - 0.418688f * gNorm - 0.081312f * bNorm;
+                        float cbDist = (cb - (-0.09f)) * (1.0f / 0.07f);
+                        float crDist = (cr - 0.09f) * (1.0f / 0.07f);
+                        float ellipseDist = cbDist * cbDist + crDist * crDist;
+                        if (ellipseDist < 1.0f) {
+                            skinMask = (1.0f - ellipseDist) *
+                                       smoothstep(0.15f, 0.35f, ySkin) * profile.skinProtection;
+                        }
                     }
 
-                    float blendedSkyR = gradedR + skyBlend * (skyRowR - gradedR);
-                    float blendedSkyG = gradedG + skyBlend * (skyRowG - gradedG);
-                    float blendedSkyB = gradedB + skyBlend * (skyRowB - gradedB);
+                    // 3. Soft Sky Adjustment (Exposure compression without cloud destruction)
+                    if (profile.skyExposureDrop > 0.001f && vPrior > 0.001f && (b8 > r8 || (r8 + g8 + b8) > 360)) {
+                        float lumaSrgb = (0.2126f * r8 + 0.7152f * g8 + 0.0722f * b8) * (1.0f / 255.0f);
+                        float blueDom = std::clamp((b8 - std::max(r8, (g8 * 87) >> 7)) * (3.0f / 255.0f), 0.0f, 1.0f);
+                        float brightThresh = smoothstep(0.45f, 0.90f, lumaSrgb);
+                        float skyConfidence = std::max(blueDom * 0.75f, brightThresh * 0.35f);
+                        float skyMask = std::clamp(skyConfidence * vPrior, 0.0f, 1.0f);
+                        float skyFactor = 1.0f - skyMask * profile.skyExposureDrop * 0.45f;
+                        rLin *= skyFactor;
+                        gLin *= skyFactor;
+                        bLin *= skyFactor;
+                    }
 
-                    float finalR = gradedR + skyMask * (blendedSkyR - gradedR);
-                    float finalG = gradedG + skyMask * (blendedSkyG - gradedG);
-                    float finalB = gradedB + skyMask * (blendedSkyB - gradedB);
+                    // 4 & 5. Photometric Exposure & White Balance Adaptation
+                    if (skinMask > 0.001f) {
+                        float wbR = wbGains[0] * (1.0f - skinMask * 0.50f) + skinMask * 0.50f;
+                        float wbG = wbGains[1] * (1.0f - skinMask * 0.50f) + skinMask * 0.50f;
+                        float wbB = wbGains[2] * (1.0f - skinMask * 0.50f) + skinMask * 0.50f;
+                        rLin *= (expMultiplier * wbR);
+                        gLin *= (expMultiplier * wbG);
+                        bLin *= (expMultiplier * wbB);
+                    } else {
+                        rLin *= expWbR;
+                        gLin *= expWbG;
+                        bLin *= expWbB;
+                    }
 
-                    dstLine[x] = a |
-                                 (std::clamp(static_cast<int>(finalR * 255.0f + 0.5f), 0, 255) << 16) |
-                                 (std::clamp(static_cast<int>(finalG * 255.0f + 0.5f), 0, 255) << 8) |
-                                  std::clamp(static_cast<int>(finalB * 255.0f + 0.5f), 0, 255);
+                    // 6. Luminance Split Toning
+                    float lum = 0.2126f * rLin + 0.7152f * gLin + 0.0722f * bLin;
+                    float mShadow = 1.0f - smoothstep(0.02f, 0.35f, lum);
+                    float mHighlight = smoothstep(0.45f, 0.95f, lum);
+                    float mMidtone = std::clamp(1.0f - mShadow - mHighlight, 0.0f, 1.0f);
+
+                    float splitR = shadowGains[0] * (1.0f + profile.shadowLift) * mShadow +
+                                   midtoneGains[0] * mMidtone +
+                                   highlightGains[0] * mHighlight;
+                    float splitG = shadowGains[1] * (1.0f + profile.shadowLift) * mShadow +
+                                   midtoneGains[1] * mMidtone +
+                                   highlightGains[1] * mHighlight;
+                    float splitB = shadowGains[2] * (1.0f + profile.shadowLift) * mShadow +
+                                   midtoneGains[2] * mMidtone +
+                                   highlightGains[2] * mHighlight;
+
+                    if (skinMask > 0.0f) {
+                        float skinProtectFactor = skinMask * 0.75f;
+                        splitR = splitR * (1.0f - skinProtectFactor) + skinProtectFactor;
+                        splitG = splitG * (1.0f - skinProtectFactor) + skinProtectFactor;
+                        splitB = splitB * (1.0f - skinProtectFactor) + skinProtectFactor;
+                    }
+
+                    rLin *= splitR;
+                    gLin *= splitG;
+                    bLin *= splitB;
+
+                    // 7. Selective Purkinje Scotopic Vision Shift (Night low-light rods)
+                    if (profile.purkinjeStrength > 0.001f) {
+                        float purkWeight = profile.purkinjeStrength * (mShadow + 0.35f * mMidtone) * (1.0f - skinMask);
+                        float curLum = 0.2126f * rLin + 0.7152f * gLin + 0.0722f * bLin;
+                        float purkR = curLum * 0.55f;
+                        float purkG = curLum * 0.80f;
+                        float purkB = curLum * 1.25f;
+                        rLin = rLin * (1.0f - purkWeight) + purkR * purkWeight;
+                        gLin = gLin * (1.0f - purkWeight) + purkG * purkWeight;
+                        bLin = bLin * (1.0f - purkWeight) + purkB * purkWeight;
+                    }
+
+                    // 8. Contrast & Saturation in Perceptual Space
+                    if (std::abs(profile.saturation - 1.0f) > 0.001f) {
+                        float postLum = 0.2126f * rLin + 0.7152f * gLin + 0.0722f * bLin;
+                        rLin = std::max(0.0f, postLum + (rLin - postLum) * profile.saturation);
+                        gLin = std::max(0.0f, postLum + (gLin - postLum) * profile.saturation);
+                        bLin = std::max(0.0f, postLum + (bLin - postLum) * profile.saturation);
+                    }
+                    if (std::abs(profile.contrast - 1.0f) > 0.001f) {
+                        rLin = std::max(0.0f, 0.18f + (rLin - 0.18f) * profile.contrast);
+                        gLin = std::max(0.0f, 0.18f + (gLin - 0.18f) * profile.contrast);
+                        bLin = std::max(0.0f, 0.18f + (bLin - 0.18f) * profile.contrast);
+                    }
+
+                    // 9. Filmic Tone Mapping (Highlight rolloff)
+                    if (profile.highlightRolloff > 0.001f) {
+                        float filmicR = acesFilm(rLin);
+                        float filmicG = acesFilm(gLin);
+                        float filmicB = acesFilm(bLin);
+                        rLin = rLin * (1.0f - profile.highlightRolloff) + filmicR * profile.highlightRolloff;
+                        gLin = gLin * (1.0f - profile.highlightRolloff) + filmicG * profile.highlightRolloff;
+                        bLin = bLin * (1.0f - profile.highlightRolloff) + filmicB * profile.highlightRolloff;
+                    }
+
+                    // 10. Encode Linear Light back to sRGB Output
+                    uint32_t outR = toSrgbByte(rLin);
+                    uint32_t outG = toSrgbByte(gLin);
+                    uint32_t outB = toSrgbByte(bLin);
+
+                    dstLine[x] = a | (outR << 16) | (outG << 8) | outB;
                 }
             }
         });

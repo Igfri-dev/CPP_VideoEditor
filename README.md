@@ -85,15 +85,22 @@ Diseñado con una arquitectura modular orientada a creadores de contenido contem
   - Curvas de canales individuales R, G, B.
   - Espectro Tonal / Gradiente de Saturación.
   - Interpolación continua Monotone Hermite Splines con evaluación precisa de LUTs de 256 niveles.
-- **Gradación Atmosférica: Hora del Día (Time of Day)**:
-  - Control mediante deslizador continuo interactivo (`0.0f` a `1.0f`) o botones de preajuste:
-    - `0.00f` **Noche**: Exposición -2.5 EV, tinte azul medianoche profundo, mezcla celeste completa y desplazamiento espectral de Purkinje (visión escotópica).
-    - `0.33f` **Mañana**: Exposición -0.5 EV, tinte ámbar pastel cálido y gradiente matutino.
-    - `0.66f` **Día**: Exposición 0.0 EV, balance neutro puro y cielo natural (atajo de rendimiento 0 ms).
-    - `1.00f` **Atardecer**: Exposición -0.8 EV, tinte carmesí/naranja atardecer y gradiente cálido de horizonte.
-  - Detección procedural de cielo mediante heurísticas de luminancia y dominancia cromática sin requerir modelos pesados de IA.
-  - Procesamiento ultra-rápido en CPU mediante tablas de búsqueda directa (LUTs), bandas de escaneo multihilo y shader GLSL multiplataforma (`TimeOfDay.frag`).
-  - Aplicable tanto a clips individuales como a nivel global del proyecto con soporte completo de Deshacer/Rehacer (`Ctrl+Z` / `Ctrl+Y`) y serialización JSON.
+- **Iluminación Atmosférica Natural: Relighting Hora del Día (Time of Day)**:
+  - Control mediante deslizador continuo interactivo (`0.0f` a `1.0f`) o botones de preajuste con visualización de fase solar y hora simulada:
+    - `0.00f` **Noche** (`00:00`): Exposición fotométrica -1.8 EV en luz lineal, visión escotópica con cambio de Purkinje (bastones) en sombras y medios tonos preservando neutras las luces artificiales (farolas/ventanas).
+    - `0.15f` **Blue Hour / Hora Azul** (`05:30`): Exposición -1.1 EV, temperatura de color 9200K, matiz magenta sutil y sombras frías profundas.
+    - `0.28f` **Amanecer** (`06:45`): Exposición -0.6 EV, primera luz con resplandor cálido pastel a 5200K y sombras crepusculares a 7200K.
+    - `0.42f` **Mañana** (`09:00`): Exposición -0.2 EV, luz solar clara y fresca a 5800K.
+    - `0.60f` **Mediodía / Día** (`12:00`): **REFERENCIA NEUTRA PURA** (0.0 EV, 6500K D65, contraste 1.0, saturación 1.0; atajo de rendimiento exacto de 0 ms).
+    - `0.82f` **Golden Hour / Hora Dorada** (`18:30`): Exposición -0.25 EV, sol rasante a 3800K, altas luces doradas radiantes (3200K), sombras en contraste frío cian/azul (7600K) generando profundidad cromática rica, y protección de tonos de piel humana.
+    - `1.00f` **Atardecer** (`20:15`): Exposición -0.7 EV, horizonte carmesí a 3000K, altas luces ámbar profundo a 2600K, split toning y compresión de altas luces filmic ACES.
+  - **Pipeline Fotométrico en Espacio Lineal**: Conversión exacta sRGB/Rec.709 ↔ Linear RGB, variación de exposición en pasos EV ($2^{\Delta\text{EV}}$), adaptación cromática Planckiana / Kelvin y división tonal (Split Toning) de sombras, tonos medios y luces altas con curvas Hermite continuas sin oscilaciones.
+  - **Conservación Natural del Cielo**: Sin reemplazo procedural artificial; conserva íntegras las texturas de nubes, gradientes reales y detalles atmosféricos del video original aplicando compresión de exposición suave.
+  - **Protección de Tonos de Piel**: Detección cromática $YC_bC_r$ que resguarda los rostros y piel humana de tintes o saturaciones agresivas.
+  - **Soporte de Tablas LUT 3D**: Generación algorítmica de mallas $32\times32\times32$, interpolación trilineal y parser de archivos estándar `.cube`.
+  - **Mapeo Tonal Fílmico (ACES Filmic Tone Mapping)**: Rolloff suave en hombro que previene quemados digitales agresivos en atardeceres y cielos brillantes.
+  - Procesamiento ultra-rápido multihilo en CPU y shader GLSL multiplataforma (`TimeOfDay.frag`).
+  - Aplicable tanto a clips individuales como a nivel global del proyecto (Master) con soporte completo de Deshacer/Rehacer (`Ctrl+Z` / `Ctrl+Y`), compatibilidad hacia atrás y serialización JSON.
 - Ajustes tanto a nivel de clip individual como a nivel global del proyecto (Master Color).
 
 ### 6. Pila de Efectos Visuales y Transiciones

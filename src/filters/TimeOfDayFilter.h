@@ -2,45 +2,111 @@
 
 #include <cstdint>
 #include <array>
+#include <vector>
+#include <string>
 #include <functional>
 #include <algorithm>
 #include <cmath>
 
 /**
  * @struct TimeProfile
- * @brief Represents the physical color grading and celestial parameters for a specific time of day.
+ * @brief Natural Time-of-Day Relighting Profile.
+ *
+ * Implements physically and perceptually sound lighting parameters:
+ *  - Photometric Exposure (EV stops in linear light)
+ *  - Correlated Color Temperature & Tint (Kelvin / Bradford adaptation)
+ *  - Luminance-based Split Toning (Shadows, Midtones, Highlights)
+ *  - Selective Purkinje scotopic vision shift
+ *  - Skin tone protection & soft sky enhancement
+ *  - 3D LUT photographic filmic look
  */
 struct TimeProfile {
-    float exposure = 0.0f;      ///< Exposure compensation in EV stops (shifts luminosity by pow(2.0, exposure))
-    float tint[3] = {1.0f, 1.0f, 1.0f}; ///< Linear RGB color tint multiplier [R, G, B]
-    float skyBlend = 0.0f;      ///< Influence / blend factor of procedural celestial sky gradient [0.0, 1.0]
+    // Photometric Exposure in linear space
+    float exposureEV = 0.0f;             ///< Stops in EV (shifts linear light by pow(2.0, exposureEV))
+
+    // Global White Balance & Chromatic Adaptation
+    float temperature = 6500.0f;         ///< Correlated color temperature in Kelvin (D65 = 6500 K)
+    float tint = 0.0f;                   ///< Green (-) to Magenta (+) tint offset [-1.0, 1.0]
+
+    // Contrast & Saturation in linear perceptual luminance space
+    float contrast = 1.0f;               ///< Contrast curve slope (1.0 = neutral)
+    float saturation = 1.0f;             ///< Color saturation factor (1.0 = neutral)
+
+    // Luminance Split Toning (Separate treatment for Shadows, Midtones, Highlights)
+    float shadowTemperature = 6500.0f;   ///< Shadow color temperature in Kelvin
+    float shadowTint = 0.0f;             ///< Shadow tint offset
+    float shadowLift = 0.0f;             ///< Shadow black level lift [0.0, 0.1]
+
+    float midtoneTemperature = 6500.0f;  ///< Midtone color temperature in Kelvin
+    float midtoneGain = 1.0f;            ///< Midtone luminance multiplier
+
+    float highlightTemperature = 6500.0f;///< Highlight color temperature in Kelvin
+    float highlightGain = 1.0f;          ///< Highlight luminance multiplier
+    float highlightRolloff = 0.20f;      ///< Filmic shoulder rolloff factor to prevent harsh clipping
+
+    // Biological / Optical Perceptual Effects
+    float purkinjeStrength = 0.0f;       ///< Scotopic rod response shift in dark tones [0.0, 1.0]
+    float skyExposureDrop = 0.0f;        ///< Soft exposure compression on detected sky [0.0, 1.0]
+    float skinProtection = 0.0f;         ///< Human skin tone preservation strength [0.0, 1.0]
+
+    // 3D LUT Film Look
+    float lutStrength = 0.0f;            ///< 3D LUT influence factor [0.0, 1.0]
+
+    // Convenience legacy accessor
+    float exposure() const { return exposureEV; }
+};
+
+/**
+ * @struct Lut3D
+ * @brief Discrete 3D Color Look-Up Table (typically 32x32x32 or 64x64x64).
+ */
+struct Lut3D {
+    int size = 32;
+    std::vector<float> data; // size * size * size * 3 floats (RGB)
+
+    bool isValid() const {
+        return size > 1 && data.size() == static_cast<size_t>(size * size * size * 3);
+    }
 };
 
 /**
  * @struct TimeOfDayUniforms
- * @brief Uniform values calculated from linear interpolation ready to be bound to a GPU fragment shader.
+ * @brief Interpolated uniform parameters ready to be uploaded to the GPU fragment shader.
  */
 struct TimeOfDayUniforms {
-    float exposure = 0.0f;
-    float colorTint[3] = {1.0f, 1.0f, 1.0f};
-    float skyBlend = 0.0f;
-    float timeOfDay = 0.66f;
+    float exposureEV = 0.0f;
+    float whiteBalanceGains[3] = {1.0f, 1.0f, 1.0f};
+    float shadowGains[3] = {1.0f, 1.0f, 1.0f};
+    float midtoneGains[3] = {1.0f, 1.0f, 1.0f};
+    float highlightGains[3] = {1.0f, 1.0f, 1.0f};
+    float contrast = 1.0f;
+    float saturation = 1.0f;
+    float shadowLift = 0.0f;
+    float highlightRolloff = 0.20f;
+    float purkinjeStrength = 0.0f;
+    float skyExposureDrop = 0.0f;
+    float skinProtection = 0.0f;
+    float lutStrength = 0.0f;
+    float timeOfDay = 0.60f;
     unsigned int textureId = 0;
 };
 
 /**
  * @class TimeOfDayFilter
- * @brief Cross-platform color grading filter simulating the diurnal cycle (Night -> Morning -> Day -> Sunset).
- * 
- * Linearly interpolates across 4 calibrated profiles:
- *  - 0.00: Night   (Exposure: -2.5, Tint: Midnight Blue [0.04, 0.07, 0.17], SkyBlend: 1.0)
- *  - 0.33: Morning (Exposure: -0.5, Tint: Pastel Amber [1.00, 0.71, 0.65], SkyBlend: 0.4)
- *  - 0.66: Day     (Exposure:  0.0, Tint: Neutral White [1.00, 1.00, 1.00], SkyBlend: 0.0)
- *  - 1.00: Sunset  (Exposure: -0.8, Tint: Crimson Sunset [0.90, 0.37, 0.17], SkyBlend: 0.8)
+ * @brief Natural Time-of-Day Relighting engine simulating diurnal illumination.
+ *
+ * Linearly & Hermite splines interpolate across 7 calibrated states:
+ *  - 0.00: Night        (Moonlit scotopic vision, -1.8 EV, cool shadows, neutral highlights)
+ *  - 0.15: Blue Hour    (Atmospheric twilight blue, -1.1 EV, 9200K, saturated sky)
+ *  - 0.28: Dawn         (First light, -0.6 EV, pastel pink/amber glow, 5200K)
+ *  - 0.42: Morning      (Crisp sunlight, -0.2 EV, 5800K)
+ *  - 0.60: Noon / Day   (NEUTRAL REFERENCE: 0.0 EV, 6500K D65, exact 0ms identity)
+ *  - 0.82: Golden Hour  (Warm low sun, 3800K, cool shadows, protected skin tones, 3200K highlights)
+ *  - 1.00: Sunset       (Deep crimson horizon, 3000K, rich amber highlights, high rolloff)
  */
 class TimeOfDayFilter {
 public:
-    // Uniform callback types for toolkit/windowing agnostic rendering
+    // Agnostic uniform callbacks
     using FloatUniformSetter = std::function<void(const char* name, float value)>;
     using Vec3UniformSetter = std::function<void(const char* name, float x, float y, float z)>;
     using TextureUniformSetter = std::function<void(const char* name, unsigned int textureUnit, unsigned int textureId)>;
@@ -49,25 +115,47 @@ public:
     ~TimeOfDayFilter() = default;
 
     /**
-     * @brief Computes piecewise linear interpolation across diurnal profiles for a slider value [0.0f, 1.0f].
-     * @param sliderValue Clamped value between 0.0 (Night) and 1.0 (Sunset).
-     * @return Interpolated TimeProfile with calculated exposure, tint, and sky blend.
+     * @brief Computes smooth Hermite spline interpolation across the 7 diurnal profiles.
+     * @param sliderValue Clamped value between 0.0f and 1.0f.
+     * @return Interpolated TimeProfile with all relighting parameters.
      */
     static TimeProfile CalculateProfile(float sliderValue);
 
     /**
-     * @brief Processes a user-selected slice of the timeline.
-     * 
-     * Verifies if currentFrame falls within [startFrame, endFrame]. If valid:
-     * 1. Interpolates profiles according to sliderValue.
-     * 2. Sets uniform parameters via agnostic uniform callbacks or updates cached uniforms.
-     * 
-     * @param currentFrame The current frame being rendered in the timeline.
-     * @param startFrame Beginning frame of the user-selected active slice.
-     * @param endFrame Ending frame of the user-selected active slice.
-     * @param sliderValue Diurnal slider value [0.0f, 1.0f].
-     * @param textureId OpenGL / GPU texture ID of the input video frame.
-     * @return true if currentFrame was within [startFrame, endFrame] and uniforms were processed; false otherwise.
+     * @brief Converts color temperature (Kelvin) and green-magenta tint into normalized RGB gains.
+     * @param kelvin Correlated color temperature in Kelvin (D65 daylight = 6500K).
+     * @param tint Green (-) to Magenta (+) tint offset in [-1.0, 1.0].
+     * @return RGB linear multipliers normalized so that D65 (6500K, 0.0) returns {1.0, 1.0, 1.0}.
+     */
+    static std::array<float, 3> KelvinToRGB(float kelvin, float tint = 0.0f);
+
+    /**
+     * @brief Returns human-readable stage name for UI display.
+     */
+    static const char* GetPhaseName(float sliderValue);
+
+    /**
+     * @brief Returns a representative simulated timecode string (e.g. "18:30").
+     */
+    static const char* GetSimulatedTime(float sliderValue);
+
+    /**
+     * @brief Generates an algorithmic 3D LUT (32x32x32) corresponding to a TimeProfile.
+     */
+    static Lut3D GenerateProfileLut(const TimeProfile &profile, int size = 32);
+
+    /**
+     * @brief Trilinear sampling of a 3D LUT.
+     */
+    static std::array<float, 3> SampleLutTrilinear(const Lut3D &lut, float r, float g, float b);
+
+    /**
+     * @brief Loads a standard .cube format 3D LUT file into memory.
+     */
+    static bool LoadCubeFile(const std::string &filePath, Lut3D &outLut);
+
+    /**
+     * @brief Renders a slice of timeline frames by calculating uniforms and triggering callbacks.
      */
     bool RenderTimelineSlice(int64_t currentFrame,
                              int64_t startFrame,
@@ -75,22 +163,20 @@ public:
                              float sliderValue,
                              unsigned int textureId);
 
-    /**
-     * @brief Retrieve last computed uniforms from RenderTimelineSlice.
-     */
     const TimeOfDayUniforms& CurrentUniforms() const { return m_lastUniforms; }
 
-    /**
-     * @brief Configures decoupled uniform setters for direct integration with any OpenGL/Vulkan/Metal pipeline.
-     */
     void SetUniformSetters(FloatUniformSetter floatSetter,
                            Vec3UniformSetter vec3Setter,
                            TextureUniformSetter textureSetter);
 
-    // Hardcoded profile presets
+    // 7 Calibrated Diurnal Profile States
     static const TimeProfile ProfileNight;
+    static const TimeProfile ProfileBlueHour;
+    static const TimeProfile ProfileDawn;
     static const TimeProfile ProfileMorning;
-    static const TimeProfile ProfileDay;
+    static const TimeProfile ProfileNoon;
+    static const TimeProfile ProfileDay;       ///< Backwards-compatible alias to ProfileNoon
+    static const TimeProfile ProfileGoldenHour;
     static const TimeProfile ProfileSunset;
 
 private:

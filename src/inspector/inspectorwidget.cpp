@@ -1,6 +1,7 @@
 #include "inspectorwidget.h"
 #include "../medialibrary/mediaitem.h"
 #include "../timelinewidget.h"
+#include "../filters/TimeOfDayFilter.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -1067,9 +1068,9 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
 
     m_clipTimeOfDaySlider = new QSlider(Qt::Horizontal, m_clipTimeOfDayGroup);
     m_clipTimeOfDaySlider->setRange(0, 100);
-    m_clipTimeOfDaySlider->setValue(66);
+    m_clipTimeOfDaySlider->setValue(60);
     m_clipTimeOfDaySlider->setStyleSheet(
-        "QSlider::groove:horizontal { height: 6px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0a1128, stop:0.33 #d47a32, stop:0.66 #79c0ff, stop:1 #e05338); border-radius: 3px; }"
+        "QSlider::groove:horizontal { height: 6px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0a1128, stop:0.15 #182a4d, stop:0.28 #a85858, stop:0.42 #e39f48, stop:0.60 #6bb3f8, stop:0.82 #e6a122, stop:1 #d73a49); border-radius: 3px; }"
         "QSlider::handle:horizontal { background: #ffffff; border: 2px solid #58a6ff; width: 14px; margin-top: -5px; margin-bottom: -5px; border-radius: 7px; }"
         "QSlider::handle:horizontal:hover { background: #58a6ff; }"
     );
@@ -1092,25 +1093,37 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
         return btn;
     };
 
-    m_clipPresetNightBtn = createTodBtnHelper("🌙 Noche", "0.00 - Noche (-2.5 EV, Deep Midnight Blue)", "#79c0ff");
-    m_clipPresetMorningBtn = createTodBtnHelper("🌅 Mañana", "0.33 - Mañana (-0.5 EV, Pastel Amber)", "#ffa657");
-    m_clipPresetDayBtn = createTodBtnHelper("☀️ Día", "0.66 - Día pleno (0.0 EV, Neutro)", "#7ee787");
-    m_clipPresetSunsetBtn = createTodBtnHelper("🌇 Atardecer", "1.00 - Atardecer (-0.8 EV, Crimson Sunset)", "#ff7b72");
+    m_clipPresetNightBtn = createTodBtnHelper("🌙 Noche", "0.00 - Noche (00:00, -1.8 EV, Scotopic Blue)", "#79c0ff");
+    m_clipPresetBlueHourBtn = createTodBtnHelper("🌌 Blue Hour", "0.15 - Blue Hour (05:30, -1.1 EV, 9200K)", "#a5d6ff");
+    m_clipPresetMorningBtn = createTodBtnHelper("🌅 Mañana", "0.42 - Mañana (09:00, -0.2 EV, 5800K)", "#ffa657");
+    m_clipPresetDayBtn = createTodBtnHelper("☀️ Mediodía", "0.60 - Mediodía Neutro (12:00, 0.0 EV, 6500K D65)", "#7ee787");
+    m_clipPresetGoldenBtn = createTodBtnHelper("✨ Golden", "0.82 - Golden Hour (18:30, 3800K, Sombras Frías)", "#f2cc60");
+    m_clipPresetSunsetBtn = createTodBtnHelper("🌇 Atardecer", "1.00 - Atardecer (20:15, 3000K, Resplandor Ámbar)", "#ff7b72");
 
     connect(m_clipPresetNightBtn, &QPushButton::clicked, this, [this]() {
         m_clipTimeOfDayCheck->setChecked(true);
         m_clipTimeOfDaySlider->setValue(0);
         if (m_model) m_model->saveState("Preset Hora del Día: Noche");
     });
+    connect(m_clipPresetBlueHourBtn, &QPushButton::clicked, this, [this]() {
+        m_clipTimeOfDayCheck->setChecked(true);
+        m_clipTimeOfDaySlider->setValue(15);
+        if (m_model) m_model->saveState("Preset Hora del Día: Blue Hour");
+    });
     connect(m_clipPresetMorningBtn, &QPushButton::clicked, this, [this]() {
         m_clipTimeOfDayCheck->setChecked(true);
-        m_clipTimeOfDaySlider->setValue(33);
+        m_clipTimeOfDaySlider->setValue(42);
         if (m_model) m_model->saveState("Preset Hora del Día: Mañana");
     });
     connect(m_clipPresetDayBtn, &QPushButton::clicked, this, [this]() {
         m_clipTimeOfDayCheck->setChecked(true);
-        m_clipTimeOfDaySlider->setValue(66);
-        if (m_model) m_model->saveState("Preset Hora del Día: Día");
+        m_clipTimeOfDaySlider->setValue(60);
+        if (m_model) m_model->saveState("Preset Hora del Día: Mediodía");
+    });
+    connect(m_clipPresetGoldenBtn, &QPushButton::clicked, this, [this]() {
+        m_clipTimeOfDayCheck->setChecked(true);
+        m_clipTimeOfDaySlider->setValue(82);
+        if (m_model) m_model->saveState("Preset Hora del Día: Golden Hour");
     });
     connect(m_clipPresetSunsetBtn, &QPushButton::clicked, this, [this]() {
         m_clipTimeOfDayCheck->setChecked(true);
@@ -1119,12 +1132,14 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
     });
 
     todPresetsRow->addWidget(m_clipPresetNightBtn);
+    todPresetsRow->addWidget(m_clipPresetBlueHourBtn);
     todPresetsRow->addWidget(m_clipPresetMorningBtn);
     todPresetsRow->addWidget(m_clipPresetDayBtn);
+    todPresetsRow->addWidget(m_clipPresetGoldenBtn);
     todPresetsRow->addWidget(m_clipPresetSunsetBtn);
     todLayout->addLayout(todPresetsRow);
 
-    updateTimeOfDayBadge(m_clipTimeOfDayBadge, 0.66f);
+    updateTimeOfDayBadge(m_clipTimeOfDayBadge, 0.60f);
     layout->addWidget(m_clipTimeOfDayGroup);
 
     // Connect Clip Color controls
@@ -1555,9 +1570,9 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
 
     m_globalTimeOfDaySlider = new QSlider(Qt::Horizontal, m_globalTimeOfDayGroup);
     m_globalTimeOfDaySlider->setRange(0, 100);
-    m_globalTimeOfDaySlider->setValue(66);
+    m_globalTimeOfDaySlider->setValue(60);
     m_globalTimeOfDaySlider->setStyleSheet(
-        "QSlider::groove:horizontal { height: 6px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0a1128, stop:0.33 #d47a32, stop:0.66 #79c0ff, stop:1 #e05338); border-radius: 3px; }"
+        "QSlider::groove:horizontal { height: 6px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0a1128, stop:0.15 #182a4d, stop:0.28 #a85858, stop:0.42 #e39f48, stop:0.60 #6bb3f8, stop:0.82 #e6a122, stop:1 #d73a49); border-radius: 3px; }"
         "QSlider::handle:horizontal { background: #ffffff; border: 2px solid #58a6ff; width: 14px; margin-top: -5px; margin-bottom: -5px; border-radius: 7px; }"
         "QSlider::handle:horizontal:hover { background: #58a6ff; }"
     );
@@ -1580,25 +1595,37 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
         return btn;
     };
 
-    m_globalPresetNightBtn = createGTodBtnHelper("🌙 Noche", "0.00 - Noche profunda (-2.5 EV, Deep Midnight Blue)", "#79c0ff");
-    m_globalPresetMorningBtn = createGTodBtnHelper("🌅 Mañana", "0.33 - Amanecer (-0.5 EV, Pastel Amber)", "#ffa657");
-    m_globalPresetDayBtn = createGTodBtnHelper("☀️ Día", "0.66 - Día pleno (-0.0 EV, Neutro)", "#7ee787");
-    m_globalPresetSunsetBtn = createGTodBtnHelper("🌇 Atardecer", "1.00 - Atardecer (-0.8 EV, Crimson Sunset)", "#ff7b72");
+    m_globalPresetNightBtn = createGTodBtnHelper("🌙 Noche", "0.00 - Noche (00:00, -1.8 EV, Scotopic Blue)", "#79c0ff");
+    m_globalPresetBlueHourBtn = createGTodBtnHelper("🌌 Blue Hour", "0.15 - Blue Hour (05:30, -1.1 EV, 9200K)", "#a5d6ff");
+    m_globalPresetMorningBtn = createGTodBtnHelper("🌅 Mañana", "0.42 - Mañana (09:00, -0.2 EV, 5800K)", "#ffa657");
+    m_globalPresetDayBtn = createGTodBtnHelper("☀️ Mediodía", "0.60 - Mediodía Neutro (12:00, 0.0 EV, 6500K D65)", "#7ee787");
+    m_globalPresetGoldenBtn = createGTodBtnHelper("✨ Golden", "0.82 - Golden Hour (18:30, 3800K, Sombras Frías)", "#f2cc60");
+    m_globalPresetSunsetBtn = createGTodBtnHelper("🌇 Atardecer", "1.00 - Atardecer (20:15, 3000K, Resplandor Ámbar)", "#ff7b72");
 
     connect(m_globalPresetNightBtn, &QPushButton::clicked, this, [this]() {
         m_globalTimeOfDayCheck->setChecked(true);
         m_globalTimeOfDaySlider->setValue(0);
         if (m_model) m_model->saveState("Preset Hora del Día General: Noche");
     });
+    connect(m_globalPresetBlueHourBtn, &QPushButton::clicked, this, [this]() {
+        m_globalTimeOfDayCheck->setChecked(true);
+        m_globalTimeOfDaySlider->setValue(15);
+        if (m_model) m_model->saveState("Preset Hora del Día General: Blue Hour");
+    });
     connect(m_globalPresetMorningBtn, &QPushButton::clicked, this, [this]() {
         m_globalTimeOfDayCheck->setChecked(true);
-        m_globalTimeOfDaySlider->setValue(33);
+        m_globalTimeOfDaySlider->setValue(42);
         if (m_model) m_model->saveState("Preset Hora del Día General: Mañana");
     });
     connect(m_globalPresetDayBtn, &QPushButton::clicked, this, [this]() {
         m_globalTimeOfDayCheck->setChecked(true);
-        m_globalTimeOfDaySlider->setValue(66);
-        if (m_model) m_model->saveState("Preset Hora del Día General: Día");
+        m_globalTimeOfDaySlider->setValue(60);
+        if (m_model) m_model->saveState("Preset Hora del Día General: Mediodía");
+    });
+    connect(m_globalPresetGoldenBtn, &QPushButton::clicked, this, [this]() {
+        m_globalTimeOfDayCheck->setChecked(true);
+        m_globalTimeOfDaySlider->setValue(82);
+        if (m_model) m_model->saveState("Preset Hora del Día General: Golden Hour");
     });
     connect(m_globalPresetSunsetBtn, &QPushButton::clicked, this, [this]() {
         m_globalTimeOfDayCheck->setChecked(true);
@@ -1607,12 +1634,14 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
     });
 
     gTodPresetsRow->addWidget(m_globalPresetNightBtn);
+    gTodPresetsRow->addWidget(m_globalPresetBlueHourBtn);
     gTodPresetsRow->addWidget(m_globalPresetMorningBtn);
     gTodPresetsRow->addWidget(m_globalPresetDayBtn);
+    gTodPresetsRow->addWidget(m_globalPresetGoldenBtn);
     gTodPresetsRow->addWidget(m_globalPresetSunsetBtn);
     gTodLayout->addLayout(gTodPresetsRow);
 
-    updateTimeOfDayBadge(m_globalTimeOfDayBadge, 0.66f);
+    updateTimeOfDayBadge(m_globalTimeOfDayBadge, 0.60f);
     gLayout->addWidget(m_globalTimeOfDayGroup);
 
     // Global signals
@@ -3413,17 +3442,29 @@ void InspectorWidget::onGlobalResetCurvesClicked()
 void InspectorWidget::updateTimeOfDayBadge(QLabel *badge, float val)
 {
     if (!badge) return;
-    if (val <= 0.16f) {
-        badge->setText(QString("🌙 Noche (%1)").arg(val, 0, 'f', 2));
-        badge->setStyleSheet("color: #79c0ff; font-weight: bold; background-color: #0d1117; border: 1px solid #1f6feb; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
-    } else if (val <= 0.49f) {
-        badge->setText(QString("🌅 Mañana (%1)").arg(val, 0, 'f', 2));
-        badge->setStyleSheet("color: #ffa657; font-weight: bold; background-color: #1f160e; border: 1px solid #d29922; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
-    } else if (val <= 0.82f) {
-        badge->setText(QString("☀️ Día (%1%2)").arg(val, 0, 'f', 2).arg(qAbs(val - 0.66f) < 0.03f ? " - Neutro" : ""));
+    const char *phase = TimeOfDayFilter::GetPhaseName(val);
+    const char *timeStr = TimeOfDayFilter::GetSimulatedTime(val);
+
+    if (val <= 0.07f) {
+        badge->setText(QString("🌙 %1 • %2 (%3)").arg(phase, timeStr).arg(val, 0, 'f', 2));
+        badge->setStyleSheet("color: #79c0ff; font-weight: bold; background-color: #0a1128; border: 1px solid #1f6feb; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
+    } else if (val <= 0.21f) {
+        badge->setText(QString("🌌 %1 • %2 (%3)").arg(phase, timeStr).arg(val, 0, 'f', 2));
+        badge->setStyleSheet("color: #a5d6ff; font-weight: bold; background-color: #0c1a3a; border: 1px solid #388bfd; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
+    } else if (val <= 0.35f) {
+        badge->setText(QString("🌄 %1 • %2 (%3)").arg(phase, timeStr).arg(val, 0, 'f', 2));
+        badge->setStyleSheet("color: #ffc58f; font-weight: bold; background-color: #2b1810; border: 1px solid #e3b341; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
+    } else if (val <= 0.51f) {
+        badge->setText(QString("🌅 %1 • %2 (%3)").arg(phase, timeStr).arg(val, 0, 'f', 2));
+        badge->setStyleSheet("color: #ffa657; font-weight: bold; background-color: #211c10; border: 1px solid #d29922; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
+    } else if (val <= 0.71f) {
+        badge->setText(QString("☀️ %1 • %2 (%3)").arg(phase, timeStr).arg(val, 0, 'f', 2));
         badge->setStyleSheet("color: #7ee787; font-weight: bold; background-color: #0c1f17; border: 1px solid #238636; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
+    } else if (val <= 0.91f) {
+        badge->setText(QString("✨ %1 • %2 (%3)").arg(phase, timeStr).arg(val, 0, 'f', 2));
+        badge->setStyleSheet("color: #f2cc60; font-weight: bold; background-color: #281a04; border: 1px solid #bb8009; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
     } else {
-        badge->setText(QString("🌇 Atardecer (%1)").arg(val, 0, 'f', 2));
+        badge->setText(QString("🌇 %1 • %2 (%3)").arg(phase, timeStr).arg(val, 0, 'f', 2));
         badge->setStyleSheet("color: #ff7b72; font-weight: bold; background-color: #251214; border: 1px solid #f85149; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
     }
 }

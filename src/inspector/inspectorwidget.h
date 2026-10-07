@@ -285,8 +285,10 @@ private:
     QSlider *m_clipTimeOfDaySlider = nullptr;
     QLabel *m_clipTimeOfDayBadge = nullptr;
     QPushButton *m_clipPresetNightBtn = nullptr;
+    QPushButton *m_clipPresetBlueHourBtn = nullptr;
     QPushButton *m_clipPresetMorningBtn = nullptr;
     QPushButton *m_clipPresetDayBtn = nullptr;
+    QPushButton *m_clipPresetGoldenBtn = nullptr;
     QPushButton *m_clipPresetSunsetBtn = nullptr;
 
     // Effects Stack controls
@@ -346,8 +348,10 @@ private:
     QSlider *m_globalTimeOfDaySlider = nullptr;
     QLabel *m_globalTimeOfDayBadge = nullptr;
     QPushButton *m_globalPresetNightBtn = nullptr;
+    QPushButton *m_globalPresetBlueHourBtn = nullptr;
     QPushButton *m_globalPresetMorningBtn = nullptr;
     QPushButton *m_globalPresetDayBtn = nullptr;
+    QPushButton *m_globalPresetGoldenBtn = nullptr;
     QPushButton *m_globalPresetSunsetBtn = nullptr;
 
     void updateTimeOfDayBadge(QLabel *badge, float val);

@@ -104,12 +104,12 @@ struct ColorAdjustments {
     ColorCurve greenCurve = ColorCurve::defaultChannel(CurveType::Green);
     ColorCurve blueCurve = ColorCurve::defaultChannel(CurveType::Blue);
 
-    // Time of Day (Diurnal Cycle Color Grading)
+    // Time of Day (Natural Diurnal Relighting)
     bool timeOfDayEnabled = false;
-    float timeOfDay = 0.66f; // [0.0f, 1.0f]: 0.00 = Noche, 0.33 = Mañana, 0.66 = Día, 1.00 = Atardecer
+    float timeOfDay = 0.60f; // [0.0f, 1.0f]: 0.00 = Noche, 0.15 = Blue Hour, 0.28 = Amanecer, 0.42 = Mañana, 0.60 = Mediodía (Neutro), 0.82 = Golden Hour, 1.00 = Atardecer
 
     bool isIdentity() const {
-        if (timeOfDayEnabled) {
+        if (timeOfDayEnabled && std::abs(timeOfDay - 0.60f) > 0.005f) {
             return false;
         }
         if (mode == ColorGradeMode::Sliders) {
