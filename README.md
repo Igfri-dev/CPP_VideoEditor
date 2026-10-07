@@ -85,6 +85,15 @@ Diseñado con una arquitectura modular orientada a creadores de contenido contem
   - Curvas de canales individuales R, G, B.
   - Espectro Tonal / Gradiente de Saturación.
   - Interpolación continua Monotone Hermite Splines con evaluación precisa de LUTs de 256 niveles.
+- **Gradación Atmosférica: Hora del Día (Time of Day)**:
+  - Control mediante deslizador continuo interactivo (`0.0f` a `1.0f`) o botones de preajuste:
+    - `0.00f` **Noche**: Exposición -2.5 EV, tinte azul medianoche profundo, mezcla celeste completa y desplazamiento espectral de Purkinje (visión escotópica).
+    - `0.33f` **Mañana**: Exposición -0.5 EV, tinte ámbar pastel cálido y gradiente matutino.
+    - `0.66f` **Día**: Exposición 0.0 EV, balance neutro puro y cielo natural (atajo de rendimiento 0 ms).
+    - `1.00f` **Atardecer**: Exposición -0.8 EV, tinte carmesí/naranja atardecer y gradiente cálido de horizonte.
+  - Detección procedural de cielo mediante heurísticas de luminancia y dominancia cromática sin requerir modelos pesados de IA.
+  - Procesamiento ultra-rápido en CPU mediante tablas de búsqueda directa (LUTs), bandas de escaneo multihilo y shader GLSL multiplataforma (`TimeOfDay.frag`).
+  - Aplicable tanto a clips individuales como a nivel global del proyecto con soporte completo de Deshacer/Rehacer (`Ctrl+Z` / `Ctrl+Y`) y serialización JSON.
 - Ajustes tanto a nivel de clip individual como a nivel global del proyecto (Master Color).
 
 ### 6. Pila de Efectos Visuales y Transiciones

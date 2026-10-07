@@ -1,7 +1,12 @@
 #include "videocompositor.h"
 #include "videoframedecoder.h"
+#include "TimeOfDayFilter.h"
 #include <QPainter>
 #include <QtMath>
+#include <cmath>
+#include <algorithm>
+#include <vector>
+#include <thread>
 
 QImage VideoCompositor::applyFilter(const QImage &source, VisualFilter filter)
 {
@@ -246,14 +251,269 @@ QImage VideoCompositor::applyFilters(const QImage &source, const QVector<VisualF
     return result;
 }
 
+QImage VideoCompositor::applyTimeOfDay(const QImage &source, float sliderValue)
+{
+    if (source.isNull()) return source;
+
+    const int w = source.width();
+    const int h = source.height();
+    if (w <= 0 || h <= 0) return source;
+
+    float clampedSlider = std::clamp(sliderValue, 0.0f, 1.0f);
+
+    // Fast-path: Day mode (0.66f) is identity (exposure=0, tint=white, skyBlend=0, nightFactor=0)
+    if (std::abs(clampedSlider - 0.66f) < 0.005f) {
+        return source;
+    }
+
+    TimeProfile profile = TimeOfDayFilter::CalculateProfile(clampedSlider);
+
+    float exposureMultiplier = std::pow(2.0f, profile.exposure);
+    float multR = exposureMultiplier * profile.tint[0];
+    float multG = exposureMultiplier * profile.tint[1];
+    float multB = exposureMultiplier * profile.tint[2];
+    float skyBlend = profile.skyBlend;
+
+    float nightFactor = (clampedSlider < 0.33f) ? (0.33f - clampedSlider) / 0.33f : 0.0f;
+
+    // Precalculate 8-bit lookup tables for non-sky / ground scanlines
+    uint32_t lutR[256];
+    uint32_t lutG[256];
+    uint32_t lutB[256];
+    for (int i = 0; i < 256; ++i) {
+        lutR[i] = static_cast<uint32_t>(std::clamp(static_cast<int>(i * multR + 0.5f), 0, 255));
+        lutG[i] = static_cast<uint32_t>(std::clamp(static_cast<int>(i * multG + 0.5f), 0, 255));
+        lutB[i] = static_cast<uint32_t>(std::clamp(static_cast<int>(i * multB + 0.5f), 0, 255));
+    }
+
+    // Celestial sky gradient keys (Zenith vs Horizon)
+    const float nightSkyZenith[3]    = {0.010f, 0.018f, 0.055f};
+    const float nightSkyHorizon[3]   = {0.030f, 0.055f, 0.130f};
+
+    const float morningSkyZenith[3]  = {0.220f, 0.380f, 0.680f};
+    const float morningSkyHorizon[3] = {0.960f, 0.620f, 0.420f};
+
+    const float daySkyZenith[3]      = {0.240f, 0.540f, 0.920f};
+    const float daySkyHorizon[3]     = {0.720f, 0.860f, 0.990f};
+
+    const float sunsetSkyZenith[3]   = {0.160f, 0.100f, 0.380f};
+    const float sunsetSkyHorizon[3]  = {0.960f, 0.360f, 0.120f};
+
+    float skyZenith[3];
+    float skyHorizon[3];
+
+    if (clampedSlider <= 0.33f) {
+        float t = clampedSlider / 0.33f;
+        for (int i = 0; i < 3; ++i) {
+            skyZenith[i]  = nightSkyZenith[i]  + t * (morningSkyZenith[i]  - nightSkyZenith[i]);
+            skyHorizon[i] = nightSkyHorizon[i] + t * (morningSkyHorizon[i] - nightSkyHorizon[i]);
+        }
+    } else if (clampedSlider <= 0.66f) {
+        float t = (clampedSlider - 0.33f) / 0.33f;
+        for (int i = 0; i < 3; ++i) {
+            skyZenith[i]  = morningSkyZenith[i]  + t * (daySkyZenith[i]  - morningSkyZenith[i]);
+            skyHorizon[i] = morningSkyHorizon[i] + t * (daySkyHorizon[i] - morningSkyHorizon[i]);
+        }
+    } else {
+        float t = (clampedSlider - 0.66f) / 0.34f;
+        for (int i = 0; i < 3; ++i) {
+            skyZenith[i]  = daySkyZenith[i]  + t * (sunsetSkyZenith[i]  - daySkyZenith[i]);
+            skyHorizon[i] = daySkyHorizon[i] + t * (sunsetSkyHorizon[i] - daySkyHorizon[i]);
+        }
+    }
+
+    auto smoothstep = [](float edge0, float edge1, float x) -> float {
+        float t = std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    };
+
+    // Precalculate vertical gradient and height prior tables for height h
+    std::vector<float> vPriorTable(h);
+    std::vector<float> skyRTable(h);
+    std::vector<float> skyGTable(h);
+    std::vector<float> skyBTable(h);
+
+    for (int y = 0; y < h; ++y) {
+        float v = (h > 1) ? static_cast<float>(h - 1 - y) / (h - 1) : 1.0f;
+        vPriorTable[y] = smoothstep(0.20f, 0.75f, v);
+        skyRTable[y] = skyHorizon[0] + v * (skyZenith[0] - skyHorizon[0]);
+        skyGTable[y] = skyHorizon[1] + v * (skyZenith[1] - skyHorizon[1]);
+        skyBTable[y] = skyHorizon[2] + v * (skyZenith[2] - skyHorizon[2]);
+    }
+
+    const bool hasAlpha = (source.format() == QImage::Format_ARGB32 || source.format() == QImage::Format_ARGB32_Premultiplied);
+    const QImage::Format targetFormat = hasAlpha ? QImage::Format_ARGB32 : QImage::Format_RGB32;
+    QImage inputImg = (source.format() == targetFormat) ? source : source.convertToFormat(targetFormat);
+    QImage result(w, h, targetFormat);
+
+    const int srcBpl = inputImg.bytesPerLine();
+    const int dstBpl = result.bytesPerLine();
+    const uchar *srcBits = inputImg.constBits();
+    uchar *dstBits = result.bits();
+
+    const float invEdgeDiff = 1.0f / (0.85f - 0.40f);
+    const float nWeight = nightFactor * 0.50f;
+    const float invNWeight = 1.0f - nWeight;
+
+    // Multithreaded scanline execution across available CPU cores with pre-detached raw pointers
+    const int hardwareCores = static_cast<int>(std::thread::hardware_concurrency());
+    const int numThreads = std::clamp(hardwareCores > 0 ? hardwareCores : 4, 1, 8);
+    std::vector<std::thread> workers;
+    workers.reserve(numThreads);
+
+    const int rowsPerThread = (h + numThreads - 1) / numThreads;
+    for (int t = 0; t < numThreads; ++t) {
+        int yStart = t * rowsPerThread;
+        int yEnd = std::min(h, (t + 1) * rowsPerThread);
+        if (yStart >= yEnd) break;
+
+        workers.emplace_back([&, yStart, yEnd]() {
+            for (int y = yStart; y < yEnd; ++y) {
+                const uint32_t *srcLine = reinterpret_cast<const uint32_t*>(srcBits + y * srcBpl);
+                uint32_t *dstLine = reinterpret_cast<uint32_t*>(dstBits + y * dstBpl);
+                float vPrior = vPriorTable[y];
+                float skyRowR = skyRTable[y];
+                float skyRowG = skyGTable[y];
+                float skyRowB = skyBTable[y];
+
+                // Fast-path: ground / non-sky scanlines where vPrior is 0
+                if (vPrior <= 0.0001f) {
+                    if (nightFactor <= 0.0001f) {
+                        if (hasAlpha) {
+                            for (int x = 0; x < w; ++x) {
+                                uint32_t p = srcLine[x];
+                                uint32_t a = p & 0xFF000000;
+                                if (a == 0) {
+                                    dstLine[x] = 0;
+                                } else {
+                                    dstLine[x] = a | (lutR[(p >> 16) & 0xFF] << 16) | (lutG[(p >> 8) & 0xFF] << 8) | lutB[p & 0xFF];
+                                }
+                            }
+                        } else {
+                            for (int x = 0; x < w; ++x) {
+                                uint32_t p = srcLine[x];
+                                dstLine[x] = 0xFF000000 | (lutR[(p >> 16) & 0xFF] << 16) | (lutG[(p >> 8) & 0xFF] << 8) | lutB[p & 0xFF];
+                            }
+                        }
+                    } else {
+                        // Night Purkinje shift on ground
+                        for (int x = 0; x < w; ++x) {
+                            uint32_t p = srcLine[x];
+                            uint32_t a = hasAlpha ? (p & 0xFF000000) : 0xFF000000;
+                            if (hasAlpha && a == 0) {
+                                dstLine[x] = 0;
+                                continue;
+                            }
+                            float r = ((p >> 16) & 0xFF) * (1.0f / 255.0f);
+                            float g = ((p >> 8) & 0xFF) * (1.0f / 255.0f);
+                            float b = (p & 0xFF) * (1.0f / 255.0f);
+                            float gradedR = r * multR;
+                            float gradedG = g * multG;
+                            float gradedB = b * multB;
+                            float scLuma = 0.2126f * gradedR + 0.7152f * gradedG + 0.0722f * gradedB;
+                            float purkR = scLuma * 0.60f;
+                            float purkG = scLuma * 0.82f;
+                            float purkB = scLuma * 1.25f;
+                            float finalR = gradedR * invNWeight + purkR * nWeight;
+                            float finalG = gradedG * invNWeight + purkG * nWeight;
+                            float finalB = gradedB * invNWeight + purkB * nWeight;
+                            dstLine[x] = a |
+                                         (std::clamp(static_cast<int>(finalR * 255.0f + 0.5f), 0, 255) << 16) |
+                                         (std::clamp(static_cast<int>(finalG * 255.0f + 0.5f), 0, 255) << 8) |
+                                          std::clamp(static_cast<int>(finalB * 255.0f + 0.5f), 0, 255);
+                        }
+                    }
+                    continue;
+                }
+
+                // Sky-eligible scanlines (vPrior > 0)
+                for (int x = 0; x < w; ++x) {
+                    uint32_t p = srcLine[x];
+                    uint32_t a = hasAlpha ? (p & 0xFF000000) : 0xFF000000;
+                    if (hasAlpha && a == 0) {
+                        dstLine[x] = 0;
+                        continue;
+                    }
+
+                    float r = ((p >> 16) & 0xFF) * (1.0f / 255.0f);
+                    float g = ((p >> 8) & 0xFF) * (1.0f / 255.0f);
+                    float b = (p & 0xFF) * (1.0f / 255.0f);
+
+                    // Procedural sky confidence heuristics
+                    float luma = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+                    float blueDom = std::clamp((b - std::max(r, g * 0.85f)) * 3.0f, 0.0f, 1.0f);
+                    float t = std::clamp((luma - 0.40f) * invEdgeDiff, 0.0f, 1.0f);
+                    float brightThresh = t * t * (3.0f - 2.0f * t);
+                    float skyConfidence = std::max(blueDom * 0.75f, brightThresh * 0.40f);
+                    float skyMask = std::clamp(skyConfidence * vPrior, 0.0f, 1.0f);
+
+                    float gradedR = r * multR;
+                    float gradedG = g * multG;
+                    float gradedB = b * multB;
+
+                    if (nightFactor > 0.0f) {
+                        float scLuma = 0.2126f * gradedR + 0.7152f * gradedG + 0.0722f * gradedB;
+                        float purkR = scLuma * 0.60f;
+                        float purkG = scLuma * 0.82f;
+                        float purkB = scLuma * 1.25f;
+                        gradedR = gradedR * invNWeight + purkR * nWeight;
+                        gradedG = gradedG * invNWeight + purkG * nWeight;
+                        gradedB = gradedB * invNWeight + purkB * nWeight;
+                    }
+
+                    float blendedSkyR = gradedR + skyBlend * (skyRowR - gradedR);
+                    float blendedSkyG = gradedG + skyBlend * (skyRowG - gradedG);
+                    float blendedSkyB = gradedB + skyBlend * (skyRowB - gradedB);
+
+                    float finalR = gradedR + skyMask * (blendedSkyR - gradedR);
+                    float finalG = gradedG + skyMask * (blendedSkyG - gradedG);
+                    float finalB = gradedB + skyMask * (blendedSkyB - gradedB);
+
+                    dstLine[x] = a |
+                                 (std::clamp(static_cast<int>(finalR * 255.0f + 0.5f), 0, 255) << 16) |
+                                 (std::clamp(static_cast<int>(finalG * 255.0f + 0.5f), 0, 255) << 8) |
+                                  std::clamp(static_cast<int>(finalB * 255.0f + 0.5f), 0, 255);
+                }
+            }
+        });
+    }
+
+    for (auto &w : workers) {
+        if (w.joinable()) {
+            w.join();
+        }
+    }
+
+    return result;
+}
+
 QImage VideoCompositor::applyColorAdjustments(const QImage &source, const ColorAdjustments &adj)
 {
     if (adj.isIdentity() || source.isNull()) {
         return source;
     }
 
-    const int w = source.width();
-    const int h = source.height();
+    QImage working = source;
+    if (adj.timeOfDayEnabled) {
+        working = applyTimeOfDay(working, adj.timeOfDay);
+    }
+
+    // Check if slider/curves adjustments are active
+    bool slidersOrCurvesIdentity = false;
+    if (adj.mode == ColorGradeMode::Sliders) {
+        slidersOrCurvesIdentity = (adj.brightness == 0 && adj.luminosity == 0 &&
+                                   adj.red == 0 && adj.green == 0 && adj.blue == 0);
+    } else {
+        slidersOrCurvesIdentity = (adj.lumaCurve.isIdentity() && adj.colorCurve.isIdentity() &&
+                                   adj.redCurve.isIdentity() && adj.greenCurve.isIdentity() && adj.blueCurve.isIdentity());
+    }
+
+    if (slidersOrCurvesIdentity) {
+        return working;
+    }
+
+    const int w = working.width();
+    const int h = working.height();
 
     if (adj.mode == ColorGradeMode::Sliders) {
         // Mode 0: Sliders (Brightness, Luminosity, Red, Green, Blue)
@@ -285,7 +545,7 @@ QImage VideoCompositor::applyColorAdjustments(const QImage &source, const ColorA
             lutB[i] = calcChannel(i, adj.blue);
         }
 
-        QImage result = source.convertToFormat(QImage::Format_ARGB32);
+        QImage result = working.convertToFormat(QImage::Format_ARGB32);
         for (int y = 0; y < h; ++y) {
             QRgb *line = reinterpret_cast<QRgb*>(result.scanLine(y));
             for (int x = 0; x < w; ++x) {
@@ -306,7 +566,7 @@ QImage VideoCompositor::applyColorAdjustments(const QImage &source, const ColorA
     bool hasBlue = !adj.blueCurve.isIdentity();
 
     if (!hasLuma && !hasColor && !hasRed && !hasGreen && !hasBlue) {
-        return source;
+        return working;
     }
 
     uint8_t lutR[256];
@@ -345,7 +605,7 @@ QImage VideoCompositor::applyColorAdjustments(const QImage &source, const ColorA
         }
     }
 
-    QImage result = source.convertToFormat(QImage::Format_ARGB32);
+    QImage result = working.convertToFormat(QImage::Format_ARGB32);
 
     for (int y = 0; y < h; ++y) {
         QRgb *line = reinterpret_cast<QRgb*>(result.scanLine(y));

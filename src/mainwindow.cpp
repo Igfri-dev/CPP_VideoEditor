@@ -52,6 +52,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(m_timelineWidget, &TimelineWidget::playheadSeekRequested, m_previewWidget, &PreviewWidget::setPosition);
     connect(m_previewWidget, &PreviewWidget::playheadMoved, m_timelineWidget, &TimelineWidget::setPlayheadPosition);
+    connect(m_previewWidget, &PreviewWidget::playbackStateChanged, m_timelineWidget, &TimelineWidget::setIsPlaying);
 
     // Selection synchronization between Timeline, Inspector and Preview Gizmo
     connect(m_timelineWidget, &TimelineWidget::clipSelected, m_inspectorWidget, &InspectorWidget::setSelectedClip);

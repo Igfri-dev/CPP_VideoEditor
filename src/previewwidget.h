@@ -5,6 +5,7 @@
 #include <QPushButton>
 #include <QSlider>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QPainter>
 #include <QLinearGradient>
 #include "core/timelinemodel.h"
@@ -244,6 +245,7 @@ public slots:
     void jumpToStart();
     void jumpToEnd();
     void setMasterVolume(int volumePercent);
+    void onAudioPositionAdvanced(qint64 positionMs);
 
 signals:
     void playheadMoved(qint64 positionMs);
@@ -257,7 +259,6 @@ protected:
 
 private slots:
     void onVideoTimerTick();
-    void onAudioPositionAdvanced(qint64 positionMs);
     void onMonitorFilesDropped(const QStringList &filePaths);
 
 private:
@@ -273,6 +274,8 @@ private:
     bool m_isPlaying = false;
     bool m_isLooping = false;
     QTimer m_videoTimer;
+    QElapsedTimer m_playbackClock;
+    qint64 m_playbackStartMs = 0;
 
     MonitorWidget *m_monitorWidget = nullptr;
     QLabel *m_timecodeLabel = nullptr;

@@ -58,6 +58,8 @@ QJsonObject ProjectSerializer::serializeColorAdjustments(const ColorAdjustments 
     obj["red"] = adj.red;
     obj["green"] = adj.green;
     obj["blue"] = adj.blue;
+    obj["timeOfDayEnabled"] = adj.timeOfDayEnabled;
+    obj["timeOfDay"] = static_cast<double>(adj.timeOfDay);
 
     auto serializeCurve = [](const ColorCurve &c) -> QJsonArray {
         QJsonArray arr;
@@ -90,6 +92,8 @@ ColorAdjustments ProjectSerializer::deserializeColorAdjustments(const QJsonObjec
     adj.red = obj.value("red").toInt(0);
     adj.green = obj.value("green").toInt(0);
     adj.blue = obj.value("blue").toInt(0);
+    adj.timeOfDayEnabled = obj.value("timeOfDayEnabled").toBool(false);
+    adj.timeOfDay = static_cast<float>(obj.value("timeOfDay").toDouble(0.66));
 
     auto deserializeCurve = [](const QJsonArray &arr, CurveType type) -> ColorCurve {
         ColorCurve c(type);

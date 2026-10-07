@@ -400,10 +400,15 @@ bool VideoExporter::mixTimelineAudioToWav(TimelineModel *model, qint64 startMs, 
                 for (const TimelineClip &clip : track.clips()) {
                     if (clip.isAudioMuted()) continue;
 
-                    qint64 chunkStartTimelineMs = startMs + (samplesWritten * 1000LL) / sampleRate;
-                    qint64 chunkEndTimelineMs = startMs + ((samplesWritten + samplesToProcess) * 1000LL) / sampleRate;
+                    const qint64 clipTlInSample = (clip.timelineInMs() * static_cast<qint64>(sampleRate)) / 1000LL;
+                    const qint64 clipTlOutSample = (clip.timelineOutMs() * static_cast<qint64>(sampleRate)) / 1000LL;
+                    const qint64 clipSrcInSample = (clip.sourceInMs() * static_cast<qint64>(sampleRate)) / 1000LL;
+                    const double speed = (clip.speed() > 0.001) ? clip.speed() : 1.0;
 
-                    if (chunkEndTimelineMs <= clip.timelineInMs() || chunkStartTimelineMs >= clip.timelineOutMs()) {
+                    const qint64 chunkStartSample = (startMs * static_cast<qint64>(sampleRate)) / 1000LL + samplesWritten;
+                    const qint64 chunkEndSample = chunkStartSample + samplesToProcess;
+
+                    if (chunkEndSample <= clipTlInSample || chunkStartSample >= clipTlOutSample) {
                         continue;
                     }
 
@@ -414,24 +419,45 @@ bool VideoExporter::mixTimelineAudioToWav(TimelineModel *model, qint64 startMs, 
                     const int16_t *pcm16 = reinterpret_cast<const int16_t*>(da.pcmData.constData());
                     const qint64 totalPcmStereoSamples = da.pcmData.size() / 4;
 
-                    for (int i = 0; i < samplesToProcess; ++i) {
-                        qint64 curMs = startMs + ((samplesWritten + i) * 1000LL) / sampleRate;
-                        if (curMs < clip.timelineInMs() || curMs >= clip.timelineOutMs()) {
-                            continue;
-                        }
+                    const int iStart = static_cast<int>(qMax<qint64>(0, clipTlInSample - chunkStartSample));
+                    const int iEnd = static_cast<int>(qMin<qint64>(samplesToProcess, clipTlOutSample - chunkStartSample));
 
-                        double vol = clip.volumeAt(curMs) * trackVol;
+                    for (int i = iStart; i < iEnd; ++i) {
+                        const qint64 tlSample = chunkStartSample + i;
+                        const qint64 curMs = (tlSample * 1000LL) / sampleRate;
+
+                        const double vol = clip.volumeAt(curMs) * trackVol;
                         if (vol <= 0.001) continue;
 
-                        qint64 srcMs = clip.mapTimelineToSourceMs(curMs);
-                        qint64 srcSampleIdx = (srcMs * sampleRate) / 1000LL;
+                        const qint64 offset = tlSample - clipTlInSample;
 
-                        if (srcSampleIdx >= 0 && srcSampleIdx < totalPcmStereoSamples) {
-                            int16_t left = pcm16[srcSampleIdx * 2];
-                            int16_t right = pcm16[srcSampleIdx * 2 + 1];
-                            mixBuffer[i * 2] += static_cast<int32_t>(left * vol);
-                            mixBuffer[i * 2 + 1] += static_cast<int32_t>(right * vol);
+                        int16_t left = 0;
+                        int16_t right = 0;
+
+                        if (std::abs(speed - 1.0) < 0.0001) {
+                            const qint64 srcIdx = clipSrcInSample + offset;
+                            if (srcIdx >= 0 && srcIdx < totalPcmStereoSamples) {
+                                left = pcm16[srcIdx * 2];
+                                right = pcm16[srcIdx * 2 + 1];
+                            }
+                        } else {
+                            const double srcExact = clipSrcInSample + (offset * speed);
+                            const qint64 s0 = static_cast<qint64>(std::floor(srcExact));
+                            const double frac = srcExact - s0;
+
+                            if (s0 >= 0 && s0 < totalPcmStereoSamples) {
+                                if (frac > 0.001 && s0 + 1 < totalPcmStereoSamples) {
+                                    left = static_cast<int16_t>(pcm16[s0 * 2] * (1.0 - frac) + pcm16[(s0 + 1) * 2] * frac);
+                                    right = static_cast<int16_t>(pcm16[s0 * 2 + 1] * (1.0 - frac) + pcm16[(s0 + 1) * 2 + 1] * frac);
+                                } else {
+                                    left = pcm16[s0 * 2];
+                                    right = pcm16[s0 * 2 + 1];
+                                }
+                            }
                         }
+
+                        mixBuffer[i * 2] += static_cast<int32_t>(left * vol);
+                        mixBuffer[i * 2 + 1] += static_cast<int32_t>(right * vol);
                     }
                 }
             }

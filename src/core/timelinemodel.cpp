@@ -1732,5 +1732,56 @@ bool TimelineModel::resetClipColorAdjustments(qint64 clipId, bool saveUndo)
     return setClipColorAdjustments(clipId, ColorAdjustments(), saveUndo);
 }
 
+void TimelineModel::setGlobalTimeOfDay(bool enabled, float val, bool saveUndo)
+{
+    float clamped = qBound(0.0f, val, 1.0f);
+    if (m_globalColorAdjustments.timeOfDayEnabled == enabled &&
+        qAbs(m_globalColorAdjustments.timeOfDay - clamped) < 0.001f) {
+        return;
+    }
+    if (saveUndo) {
+        saveState("Cambiar hora del día general");
+    }
+    m_globalColorAdjustments.timeOfDayEnabled = enabled;
+    m_globalColorAdjustments.timeOfDay = clamped;
+    emit globalColorAdjustmentsChanged();
+    notifyChange();
+}
+
+bool TimelineModel::setClipTimeOfDay(qint64 clipId, bool enabled, float val, bool saveUndo)
+{
+    return setClipsTimeOfDay({clipId}, enabled, val, saveUndo);
+}
+
+bool TimelineModel::setClipsTimeOfDay(const QList<qint64> &clipIds, bool enabled, float val, bool saveUndo)
+{
+    if (clipIds.isEmpty()) return false;
+    float clamped = qBound(0.0f, val, 1.0f);
+    if (saveUndo) {
+        saveState(clipIds.size() > 1 ? "Ajustar hora del día de clips seleccionados" : "Ajustar hora del día del clip");
+    }
+
+    bool anyModified = false;
+    for (qint64 cid : clipIds) {
+        TimelineClip *clip = findClip(cid);
+        if (clip) {
+            ColorAdjustments adj = clip->colorAdjustments();
+            if (adj.timeOfDayEnabled != enabled || qAbs(adj.timeOfDay - clamped) >= 0.001f) {
+                adj.timeOfDayEnabled = enabled;
+                adj.timeOfDay = clamped;
+                clip->setColorAdjustments(adj);
+                emit clipModified(cid);
+                anyModified = true;
+            }
+        }
+    }
+
+    if (anyModified) {
+        notifyChange();
+        return true;
+    }
+    return false;
+}
+
 
 

@@ -1363,7 +1363,7 @@ PreviewWidget::PreviewWidget(TimelineModel *model, AudioEngine *audioEngine, QWi
     mainLayout->addWidget(transportBar);
 
     // Timer for video frame updates during playback
-    m_videoTimer.setInterval(33); // ~30 fps
+    m_videoTimer.setInterval(16); // ~60 fps smooth updates
     connect(&m_videoTimer, &QTimer::timeout, this, &PreviewWidget::onVideoTimerTick);
 
     if (m_audioEngine) {
@@ -1400,6 +1400,10 @@ void PreviewWidget::setPosition(qint64 positionMs)
 {
     qint64 total = m_model ? m_model->totalDurationMs() : 10000;
     m_currentPositionMs = qBound<qint64>(0, positionMs, total);
+    m_playbackStartMs = m_currentPositionMs;
+    if (m_isPlaying) {
+        m_playbackClock.restart();
+    }
     m_lastRenderedFrameIndex = m_currentPositionMs / 33;
     if (m_audioEngine) {
         m_audioEngine->setPosition(m_currentPositionMs);
@@ -1419,6 +1423,8 @@ void PreviewWidget::play()
 
     m_isPlaying = true;
     m_lastRenderedFrameIndex = -1;
+    m_playbackStartMs = m_currentPositionMs;
+    m_playbackClock.start();
     if (m_monitorWidget) {
         m_monitorWidget->setIsPlaying(true);
     }
@@ -1505,37 +1511,60 @@ void PreviewWidget::setMasterVolume(int volumePercent)
 
 void PreviewWidget::onAudioPositionAdvanced(qint64 positionMs)
 {
-    if (m_isPlaying && m_currentPositionMs != positionMs) {
-        m_currentPositionMs = positionMs;
-        emit playheadMoved(m_currentPositionMs);
-        updateTimecodeLabel();
-        qint64 frameIdx = positionMs / 33;
-        if (frameIdx != m_lastRenderedFrameIndex) {
-            m_lastRenderedFrameIndex = frameIdx;
-            renderCurrentFrame();
-        }
+    if (!m_isPlaying) return;
+
+    // Ignore audio position while hardware DAC is still priming its buffer
+    if (positionMs <= m_playbackStartMs && m_playbackClock.elapsed() < 120) {
+        return;
     }
+
+    // Soft drift correction: lock wall-clock to audio clock when audio is active and healthy
+    qint64 currentWallMs = m_playbackStartMs + m_playbackClock.elapsed();
+    qint64 drift = positionMs - currentWallMs;
+
+    // Within 45ms, lip-sync is imperceptible according to broadcast standards
+    if (qAbs(drift) > 45 && qAbs(drift) < 200) {
+        m_playbackStartMs += (drift > 0 ? 1 : -1);
+    } else if (drift >= 200) {
+        // Audio has jumped forward by 200ms+; catch video up forward
+        m_playbackStartMs = positionMs;
+        m_playbackClock.restart();
+    }
+    // If drift <= -200, audio is temporarily lagging/buffering: video continues forward
+    // without rewinding, allowing AudioEngine's feed timer to catch up smoothly.
 }
 
 void PreviewWidget::onVideoTimerTick()
 {
     if (!m_isPlaying) return;
 
-    // If audio engine is driving playback, audio clock handles real-time sync
-    if (m_audioEngine && m_audioEngine->isPlaying()) {
+    qint64 elapsedMs = m_playbackClock.elapsed();
+    qint64 targetMs = m_playbackStartMs + elapsedMs;
+
+    // Enforce strictly monotonic forward playback: playhead must NEVER retrocede during active playback
+    if (targetMs < m_currentPositionMs) {
+        targetMs = m_currentPositionMs;
+    }
+
+    qint64 total = m_model ? m_model->totalDurationMs() : 10000;
+    if (targetMs >= total) {
+        m_currentPositionMs = total;
+        pause();
+        emit playheadMoved(m_currentPositionMs);
+        updateTimecodeLabel();
+        renderCurrentFrame();
         return;
     }
 
-    m_currentPositionMs += 33;
-    qint64 total = m_model ? m_model->totalDurationMs() : 10000;
-    if (m_currentPositionMs >= total) {
-        m_currentPositionMs = total;
-        pause();
-    }
+    m_currentPositionMs = targetMs;
     emit playheadMoved(m_currentPositionMs);
     updateTimecodeLabel();
-    m_lastRenderedFrameIndex = m_currentPositionMs / 33;
-    renderCurrentFrame();
+
+    qint64 frameIdx = m_currentPositionMs / 33;
+    if (frameIdx != m_lastRenderedFrameIndex) {
+        m_lastRenderedFrameIndex = frameIdx;
+        renderCurrentFrame();
+    }
 }
 
 void PreviewWidget::setSelectedClipId(qint64 clipId)

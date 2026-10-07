@@ -74,6 +74,9 @@ public slots:
     void selectAll();
     void addVideoTrack();
     void addAudioTrack();
+    void setIsPlaying(bool playing);
+    bool isPlaying() const { return m_isPlaying; }
+    void invalidateFilmstripCache(qint64 clipId = -1);
 
 signals:
     void playheadSeekRequested(qint64 positionMs);
@@ -157,4 +160,15 @@ private:
     void showEmptyContextMenu(qint64 trackId, qint64 timelineMs, const QPoint &globalPos);
     void showTrackContextMenu(qint64 trackId, const QPoint &globalPos);
     void showMarkerContextMenu(qint64 markerId, const QPoint &globalPos);
+
+    struct FilmstripCacheItem {
+        int width = 0;
+        int height = 0;
+        qint64 sourceInMs = -1;
+        qint64 durationMs = -1;
+        double speed = 1.0;
+        QPixmap pixmap;
+    };
+    QMap<qint64, FilmstripCacheItem> m_filmstripCache;
+    bool m_isPlaying = false;
 };

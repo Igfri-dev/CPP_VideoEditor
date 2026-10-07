@@ -13,13 +13,13 @@ public:
     static QString toPortableRelativePath(const QString &targetPath, const QString &baseDir);
     static QString resolvePortablePath(const QString &savedPath, const QString &baseDir);
 
-private:
-    static QJsonObject serializeClip(const TimelineClip &clip, const QString &projectDir);
-    static TimelineClip deserializeClip(const QJsonObject &obj, const QString &projectDir);
-
     static QJsonObject serializeColorAdjustments(const ColorAdjustments &adj);
     static ColorAdjustments deserializeColorAdjustments(const QJsonObject &obj);
 
     static QJsonObject serializeMotionPath(const MotionPath &path);
     static MotionPath deserializeMotionPath(const QJsonObject &obj);
+
+private:
+    static QJsonObject serializeClip(const TimelineClip &clip, const QString &projectDir);
+    static TimelineClip deserializeClip(const QJsonObject &obj, const QString &projectDir);
 };

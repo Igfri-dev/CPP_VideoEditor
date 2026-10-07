@@ -118,12 +118,15 @@ add_executable(CPP_VideoEditor
     src/snapping/canvassnappingengine.cpp
     src/snapping/timelinesnappingengine.h
     src/snapping/timelinesnappingengine.cpp
+    src/filters/TimeOfDayFilter.h
+    src/filters/TimeOfDayFilter.cpp
     resources/main.qrc
 )
 
 target_include_directories(CPP_VideoEditor PRIVATE
     src
     src/core
+    src/filters
     src/medialibrary
     src/engine
     src/inspector
@@ -158,6 +161,8 @@ add_executable(test_editor
     src/core/timelinemodel.cpp
     src/timelinewidget.h
     src/timelinewidget.cpp
+    src/previewwidget.h
+    src/previewwidget.cpp
     src/medialibrary/mediaitem.h
     src/medialibrary/mediaitem.cpp
     src/engine/videoframedecoder.h
@@ -179,11 +184,14 @@ add_executable(test_editor
     src/inspector/inspectorwidget.cpp
     src/inspector/curveeditorwidget.h
     src/inspector/curveeditorwidget.cpp
+    src/filters/TimeOfDayFilter.h
+    src/filters/TimeOfDayFilter.cpp
 )
 
 target_include_directories(test_editor PRIVATE
     src
     src/core
+    src/filters
     src/medialibrary
     src/engine
     src/snapping

@@ -1044,6 +1044,89 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
 
     layout->addWidget(m_clipColorSection);
 
+    // Clip Time of Day Section (Interactive Day-to-Night Grading)
+    m_clipTimeOfDayGroup = new QGroupBox("☀️ Hora del Día (Time of Day)", m_contentContainer);
+    m_clipTimeOfDayGroup->setStyleSheet(
+        "QGroupBox { color: #f0883e; font-weight: bold; border: 1px solid #30363d; border-radius: 4px; margin-top: 8px; padding-top: 10px; }"
+        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+    );
+    QVBoxLayout *todLayout = new QVBoxLayout(m_clipTimeOfDayGroup);
+    todLayout->setSpacing(6);
+
+    QHBoxLayout *todTopRow = new QHBoxLayout();
+    m_clipTimeOfDayCheck = new QCheckBox("Activar Efecto Hora del Día", m_clipTimeOfDayGroup);
+    m_clipTimeOfDayCheck->setStyleSheet("QCheckBox { color: #c9d1d9; font-weight: bold; font-size: 11px; }");
+    connect(m_clipTimeOfDayCheck, &QCheckBox::toggled, this, &InspectorWidget::onClipTimeOfDayToggled);
+    todTopRow->addWidget(m_clipTimeOfDayCheck);
+    todTopRow->addStretch();
+
+    m_clipTimeOfDayBadge = new QLabel("☀️ Día (0.66)", m_clipTimeOfDayGroup);
+    m_clipTimeOfDayBadge->setAlignment(Qt::AlignCenter);
+    todTopRow->addWidget(m_clipTimeOfDayBadge);
+    todLayout->addLayout(todTopRow);
+
+    m_clipTimeOfDaySlider = new QSlider(Qt::Horizontal, m_clipTimeOfDayGroup);
+    m_clipTimeOfDaySlider->setRange(0, 100);
+    m_clipTimeOfDaySlider->setValue(66);
+    m_clipTimeOfDaySlider->setStyleSheet(
+        "QSlider::groove:horizontal { height: 6px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0a1128, stop:0.33 #d47a32, stop:0.66 #79c0ff, stop:1 #e05338); border-radius: 3px; }"
+        "QSlider::handle:horizontal { background: #ffffff; border: 2px solid #58a6ff; width: 14px; margin-top: -5px; margin-bottom: -5px; border-radius: 7px; }"
+        "QSlider::handle:horizontal:hover { background: #58a6ff; }"
+    );
+    connect(m_clipTimeOfDaySlider, &QSlider::valueChanged, this, &InspectorWidget::onClipTimeOfDayChanged);
+    connect(m_clipTimeOfDaySlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar hora del día de clip");
+    });
+    todLayout->addWidget(m_clipTimeOfDaySlider);
+
+    QHBoxLayout *todPresetsRow = new QHBoxLayout();
+    todPresetsRow->setSpacing(4);
+    auto createTodBtnHelper = [](const QString &txt, const QString &tooltip, const QString &color) {
+        QPushButton *btn = new QPushButton(txt);
+        btn->setToolTip(tooltip);
+        btn->setCursor(Qt::PointingHandCursor);
+        btn->setStyleSheet(QString(
+            "QPushButton { background-color: #161b22; color: %1; border: 1px solid #30363d; border-radius: 3px; padding: 3px 4px; font-size: 10px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #21262d; border-color: %1; }"
+        ).arg(color));
+        return btn;
+    };
+
+    m_clipPresetNightBtn = createTodBtnHelper("🌙 Noche", "0.00 - Noche (-2.5 EV, Deep Midnight Blue)", "#79c0ff");
+    m_clipPresetMorningBtn = createTodBtnHelper("🌅 Mañana", "0.33 - Mañana (-0.5 EV, Pastel Amber)", "#ffa657");
+    m_clipPresetDayBtn = createTodBtnHelper("☀️ Día", "0.66 - Día pleno (0.0 EV, Neutro)", "#7ee787");
+    m_clipPresetSunsetBtn = createTodBtnHelper("🌇 Atardecer", "1.00 - Atardecer (-0.8 EV, Crimson Sunset)", "#ff7b72");
+
+    connect(m_clipPresetNightBtn, &QPushButton::clicked, this, [this]() {
+        m_clipTimeOfDayCheck->setChecked(true);
+        m_clipTimeOfDaySlider->setValue(0);
+        if (m_model) m_model->saveState("Preset Hora del Día: Noche");
+    });
+    connect(m_clipPresetMorningBtn, &QPushButton::clicked, this, [this]() {
+        m_clipTimeOfDayCheck->setChecked(true);
+        m_clipTimeOfDaySlider->setValue(33);
+        if (m_model) m_model->saveState("Preset Hora del Día: Mañana");
+    });
+    connect(m_clipPresetDayBtn, &QPushButton::clicked, this, [this]() {
+        m_clipTimeOfDayCheck->setChecked(true);
+        m_clipTimeOfDaySlider->setValue(66);
+        if (m_model) m_model->saveState("Preset Hora del Día: Día");
+    });
+    connect(m_clipPresetSunsetBtn, &QPushButton::clicked, this, [this]() {
+        m_clipTimeOfDayCheck->setChecked(true);
+        m_clipTimeOfDaySlider->setValue(100);
+        if (m_model) m_model->saveState("Preset Hora del Día: Atardecer");
+    });
+
+    todPresetsRow->addWidget(m_clipPresetNightBtn);
+    todPresetsRow->addWidget(m_clipPresetMorningBtn);
+    todPresetsRow->addWidget(m_clipPresetDayBtn);
+    todPresetsRow->addWidget(m_clipPresetSunsetBtn);
+    todLayout->addLayout(todPresetsRow);
+
+    updateTimeOfDayBadge(m_clipTimeOfDayBadge, 0.66f);
+    layout->addWidget(m_clipTimeOfDayGroup);
+
     // Connect Clip Color controls
     connect(m_clipBrightnessSlider, &QSlider::valueChanged, this, [this](int val) {
         if (!m_updatingUi) {
@@ -1448,6 +1531,89 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
     connect(m_globalLumaCurveWidget, &CurveEditorWidget::curveChangeCommitted, this, &InspectorWidget::onGlobalLumaCurveCommitted);
 
     gLayout->addWidget(gColorGroup);
+
+    // Global Time of Day Section (Interactive Day-to-Night Grading Master)
+    m_globalTimeOfDayGroup = new QGroupBox("☀️ Hora del Día Global (Master)", m_globalContainer);
+    m_globalTimeOfDayGroup->setStyleSheet(
+        "QGroupBox { color: #f0883e; font-weight: bold; border: 1px solid #30363d; border-radius: 4px; margin-top: 8px; padding-top: 10px; }"
+        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+    );
+    QVBoxLayout *gTodLayout = new QVBoxLayout(m_globalTimeOfDayGroup);
+    gTodLayout->setSpacing(6);
+
+    QHBoxLayout *gTodTopRow = new QHBoxLayout();
+    m_globalTimeOfDayCheck = new QCheckBox("Activar Efecto Hora del Día Master", m_globalTimeOfDayGroup);
+    m_globalTimeOfDayCheck->setStyleSheet("QCheckBox { color: #c9d1d9; font-weight: bold; font-size: 11px; }");
+    connect(m_globalTimeOfDayCheck, &QCheckBox::toggled, this, &InspectorWidget::onGlobalTimeOfDayToggled);
+    gTodTopRow->addWidget(m_globalTimeOfDayCheck);
+    gTodTopRow->addStretch();
+
+    m_globalTimeOfDayBadge = new QLabel("☀️ Día (0.66)", m_globalTimeOfDayGroup);
+    m_globalTimeOfDayBadge->setAlignment(Qt::AlignCenter);
+    gTodTopRow->addWidget(m_globalTimeOfDayBadge);
+    gTodLayout->addLayout(gTodTopRow);
+
+    m_globalTimeOfDaySlider = new QSlider(Qt::Horizontal, m_globalTimeOfDayGroup);
+    m_globalTimeOfDaySlider->setRange(0, 100);
+    m_globalTimeOfDaySlider->setValue(66);
+    m_globalTimeOfDaySlider->setStyleSheet(
+        "QSlider::groove:horizontal { height: 6px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0a1128, stop:0.33 #d47a32, stop:0.66 #79c0ff, stop:1 #e05338); border-radius: 3px; }"
+        "QSlider::handle:horizontal { background: #ffffff; border: 2px solid #58a6ff; width: 14px; margin-top: -5px; margin-bottom: -5px; border-radius: 7px; }"
+        "QSlider::handle:horizontal:hover { background: #58a6ff; }"
+    );
+    connect(m_globalTimeOfDaySlider, &QSlider::valueChanged, this, &InspectorWidget::onGlobalTimeOfDayChanged);
+    connect(m_globalTimeOfDaySlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_model) m_model->saveState("Ajustar hora del día general");
+    });
+    gTodLayout->addWidget(m_globalTimeOfDaySlider);
+
+    QHBoxLayout *gTodPresetsRow = new QHBoxLayout();
+    gTodPresetsRow->setSpacing(4);
+    auto createGTodBtnHelper = [](const QString &txt, const QString &tooltip, const QString &color) {
+        QPushButton *btn = new QPushButton(txt);
+        btn->setToolTip(tooltip);
+        btn->setCursor(Qt::PointingHandCursor);
+        btn->setStyleSheet(QString(
+            "QPushButton { background-color: #161b22; color: %1; border: 1px solid #30363d; border-radius: 3px; padding: 3px 4px; font-size: 10px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #21262d; border-color: %1; }"
+        ).arg(color));
+        return btn;
+    };
+
+    m_globalPresetNightBtn = createGTodBtnHelper("🌙 Noche", "0.00 - Noche profunda (-2.5 EV, Deep Midnight Blue)", "#79c0ff");
+    m_globalPresetMorningBtn = createGTodBtnHelper("🌅 Mañana", "0.33 - Amanecer (-0.5 EV, Pastel Amber)", "#ffa657");
+    m_globalPresetDayBtn = createGTodBtnHelper("☀️ Día", "0.66 - Día pleno (-0.0 EV, Neutro)", "#7ee787");
+    m_globalPresetSunsetBtn = createGTodBtnHelper("🌇 Atardecer", "1.00 - Atardecer (-0.8 EV, Crimson Sunset)", "#ff7b72");
+
+    connect(m_globalPresetNightBtn, &QPushButton::clicked, this, [this]() {
+        m_globalTimeOfDayCheck->setChecked(true);
+        m_globalTimeOfDaySlider->setValue(0);
+        if (m_model) m_model->saveState("Preset Hora del Día General: Noche");
+    });
+    connect(m_globalPresetMorningBtn, &QPushButton::clicked, this, [this]() {
+        m_globalTimeOfDayCheck->setChecked(true);
+        m_globalTimeOfDaySlider->setValue(33);
+        if (m_model) m_model->saveState("Preset Hora del Día General: Mañana");
+    });
+    connect(m_globalPresetDayBtn, &QPushButton::clicked, this, [this]() {
+        m_globalTimeOfDayCheck->setChecked(true);
+        m_globalTimeOfDaySlider->setValue(66);
+        if (m_model) m_model->saveState("Preset Hora del Día General: Día");
+    });
+    connect(m_globalPresetSunsetBtn, &QPushButton::clicked, this, [this]() {
+        m_globalTimeOfDayCheck->setChecked(true);
+        m_globalTimeOfDaySlider->setValue(100);
+        if (m_model) m_model->saveState("Preset Hora del Día General: Atardecer");
+    });
+
+    gTodPresetsRow->addWidget(m_globalPresetNightBtn);
+    gTodPresetsRow->addWidget(m_globalPresetMorningBtn);
+    gTodPresetsRow->addWidget(m_globalPresetDayBtn);
+    gTodPresetsRow->addWidget(m_globalPresetSunsetBtn);
+    gTodLayout->addLayout(gTodPresetsRow);
+
+    updateTimeOfDayBadge(m_globalTimeOfDayBadge, 0.66f);
+    gLayout->addWidget(m_globalTimeOfDayGroup);
 
     // Global signals
     connect(m_globalBrightnessSlider, &QSlider::valueChanged, this, [this](int val) {
@@ -1945,9 +2111,25 @@ void InspectorWidget::refreshUi()
         }
 
         refreshEffectsStack();
+
+        if (m_clipTimeOfDayGroup) {
+            m_clipTimeOfDayGroup->show();
+            m_clipTimeOfDayCheck->blockSignals(true);
+            m_clipTimeOfDayCheck->setChecked(adj.timeOfDayEnabled);
+            m_clipTimeOfDayCheck->blockSignals(false);
+
+            m_clipTimeOfDaySlider->blockSignals(true);
+            m_clipTimeOfDaySlider->setValue(qRound(adj.timeOfDay * 100.0f));
+            m_clipTimeOfDaySlider->blockSignals(false);
+
+            updateTimeOfDayBadge(m_clipTimeOfDayBadge, adj.timeOfDay);
+        }
     } else {
         m_videoSection->hide();
         m_clipColorSection->hide();
+        if (m_clipTimeOfDayGroup) {
+            m_clipTimeOfDayGroup->hide();
+        }
         m_effectsSection->hide();
     }
 
@@ -2860,6 +3042,18 @@ void InspectorWidget::updateGlobalPropertiesUi()
                                                       : "QPushButton { background-color: #21262d; color: #8b949e; border: 1px solid #30363d; border-radius: 4px; padding: 4px 8px; font-weight: bold; font-size: 11px; } QPushButton:hover { background-color: #30363d; color: white; }");
     }
 
+    if (m_globalTimeOfDayCheck && m_globalTimeOfDaySlider) {
+        m_globalTimeOfDayCheck->blockSignals(true);
+        m_globalTimeOfDayCheck->setChecked(adj.timeOfDayEnabled);
+        m_globalTimeOfDayCheck->blockSignals(false);
+
+        m_globalTimeOfDaySlider->blockSignals(true);
+        m_globalTimeOfDaySlider->setValue(qRound(adj.timeOfDay * 100.0f));
+        m_globalTimeOfDaySlider->blockSignals(false);
+
+        updateTimeOfDayBadge(m_globalTimeOfDayBadge, adj.timeOfDay);
+    }
+
     if (m_projectDurationLabel) {
         qint64 totalMs = m_model->totalDurationMs();
         qint64 sec = totalMs / 1000;
@@ -3213,6 +3407,74 @@ void InspectorWidget::onGlobalResetCurvesClicked()
     m_model->saveState("Restablecer gráficos de color generales");
     m_model->setGlobalLumaCurve(defLuma, false);
     m_model->setGlobalColorCurve(defColor, false);
+    emit globalPropertyModified();
+}
+
+void InspectorWidget::updateTimeOfDayBadge(QLabel *badge, float val)
+{
+    if (!badge) return;
+    if (val <= 0.16f) {
+        badge->setText(QString("🌙 Noche (%1)").arg(val, 0, 'f', 2));
+        badge->setStyleSheet("color: #79c0ff; font-weight: bold; background-color: #0d1117; border: 1px solid #1f6feb; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
+    } else if (val <= 0.49f) {
+        badge->setText(QString("🌅 Mañana (%1)").arg(val, 0, 'f', 2));
+        badge->setStyleSheet("color: #ffa657; font-weight: bold; background-color: #1f160e; border: 1px solid #d29922; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
+    } else if (val <= 0.82f) {
+        badge->setText(QString("☀️ Día (%1%2)").arg(val, 0, 'f', 2).arg(qAbs(val - 0.66f) < 0.03f ? " - Neutro" : ""));
+        badge->setStyleSheet("color: #7ee787; font-weight: bold; background-color: #0c1f17; border: 1px solid #238636; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
+    } else {
+        badge->setText(QString("🌇 Atardecer (%1)").arg(val, 0, 'f', 2));
+        badge->setStyleSheet("color: #ff7b72; font-weight: bold; background-color: #251214; border: 1px solid #f85149; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
+    }
+}
+
+void InspectorWidget::onClipTimeOfDayToggled(bool enabled)
+{
+    if (m_updatingUi || !m_model) return;
+    float val = m_clipTimeOfDaySlider->value() / 100.0f;
+    if (m_selectedClipIds.size() > 1) {
+        m_model->setClipsTimeOfDay(m_selectedClipIds.values(), enabled, val, true);
+        for (qint64 cid : m_selectedClipIds) {
+            emit clipPropertyModified(cid);
+        }
+    } else if (m_selectedClipId > 0) {
+        m_model->setClipTimeOfDay(m_selectedClipId, enabled, val, true);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onClipTimeOfDayChanged(int value)
+{
+    float val = value / 100.0f;
+    updateTimeOfDayBadge(m_clipTimeOfDayBadge, val);
+    if (m_updatingUi || !m_model) return;
+    bool enabled = m_clipTimeOfDayCheck->isChecked();
+    if (m_selectedClipIds.size() > 1) {
+        m_model->setClipsTimeOfDay(m_selectedClipIds.values(), enabled, val, false);
+        for (qint64 cid : m_selectedClipIds) {
+            emit clipPropertyModified(cid);
+        }
+    } else if (m_selectedClipId > 0) {
+        m_model->setClipTimeOfDay(m_selectedClipId, enabled, val, false);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onGlobalTimeOfDayToggled(bool enabled)
+{
+    if (m_updatingUi || !m_model) return;
+    float val = m_globalTimeOfDaySlider->value() / 100.0f;
+    m_model->setGlobalTimeOfDay(enabled, val, true);
+    emit globalPropertyModified();
+}
+
+void InspectorWidget::onGlobalTimeOfDayChanged(int value)
+{
+    float val = value / 100.0f;
+    updateTimeOfDayBadge(m_globalTimeOfDayBadge, val);
+    if (m_updatingUi || !m_model) return;
+    bool enabled = m_globalTimeOfDayCheck->isChecked();
+    m_model->setGlobalTimeOfDay(enabled, val, false);
     emit globalPropertyModified();
 }
 

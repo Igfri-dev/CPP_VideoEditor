@@ -117,6 +117,7 @@ public:
     void setGlobalRedCurve(const ColorCurve &curve, bool saveUndo = true);
     void setGlobalGreenCurve(const ColorCurve &curve, bool saveUndo = true);
     void setGlobalBlueCurve(const ColorCurve &curve, bool saveUndo = true);
+    void setGlobalTimeOfDay(bool enabled, float val, bool saveUndo = true);
     void resetGlobalColorAdjustments(bool saveUndo = true);
 
     bool setClipColorAdjustments(qint64 clipId, const ColorAdjustments &adj, bool saveUndo = true);
@@ -127,6 +128,8 @@ public:
     bool setClipRedPresence(qint64 clipId, int r, bool saveUndo = true);
     bool setClipGreenPresence(qint64 clipId, int g, bool saveUndo = true);
     bool setClipBluePresence(qint64 clipId, int b, bool saveUndo = true);
+    bool setClipTimeOfDay(qint64 clipId, bool enabled, float val, bool saveUndo = true);
+    bool setClipsTimeOfDay(const QList<qint64> &clipIds, bool enabled, float val, bool saveUndo = true);
     bool setClipLumaCurve(qint64 clipId, const ColorCurve &curve, bool saveUndo = true);
     bool setClipColorCurve(qint64 clipId, const ColorCurve &curve, bool saveUndo = true);
     bool setClipRedCurve(qint64 clipId, const ColorCurve &curve, bool saveUndo = true);

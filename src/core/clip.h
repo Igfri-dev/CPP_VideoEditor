@@ -104,7 +104,14 @@ struct ColorAdjustments {
     ColorCurve greenCurve = ColorCurve::defaultChannel(CurveType::Green);
     ColorCurve blueCurve = ColorCurve::defaultChannel(CurveType::Blue);
 
+    // Time of Day (Diurnal Cycle Color Grading)
+    bool timeOfDayEnabled = false;
+    float timeOfDay = 0.66f; // [0.0f, 1.0f]: 0.00 = Noche, 0.33 = Mañana, 0.66 = Día, 1.00 = Atardecer
+
     bool isIdentity() const {
+        if (timeOfDayEnabled) {
+            return false;
+        }
         if (mode == ColorGradeMode::Sliders) {
             return brightness == 0 && luminosity == 0 && red == 0 && green == 0 && blue == 0;
         } else {
@@ -117,6 +124,8 @@ struct ColorAdjustments {
         return mode == o.mode &&
                brightness == o.brightness && luminosity == o.luminosity &&
                red == o.red && green == o.green && blue == o.blue &&
+               timeOfDayEnabled == o.timeOfDayEnabled &&
+               std::abs(timeOfDay - o.timeOfDay) < 0.001f &&
                lumaCurve == o.lumaCurve && colorCurve == o.colorCurve &&
                redCurve == o.redCurve && greenCurve == o.greenCurve && blueCurve == o.blueCurve;
     }
@@ -246,12 +255,18 @@ public:
         m_colorAdjustments.red = qBound(-100, adj.red, 100);
         m_colorAdjustments.green = qBound(-100, adj.green, 100);
         m_colorAdjustments.blue = qBound(-100, adj.blue, 100);
+        m_colorAdjustments.timeOfDayEnabled = adj.timeOfDayEnabled;
+        m_colorAdjustments.timeOfDay = qBound(0.0f, adj.timeOfDay, 1.0f);
         m_colorAdjustments.lumaCurve = adj.lumaCurve;
         m_colorAdjustments.colorCurve = adj.colorCurve;
         m_colorAdjustments.redCurve = adj.redCurve;
         m_colorAdjustments.greenCurve = adj.greenCurve;
         m_colorAdjustments.blueCurve = adj.blueCurve;
     }
+    bool isTimeOfDayEnabled() const { return m_colorAdjustments.timeOfDayEnabled; }
+    void setTimeOfDayEnabled(bool enabled) { m_colorAdjustments.timeOfDayEnabled = enabled; }
+    float timeOfDay() const { return m_colorAdjustments.timeOfDay; }
+    void setTimeOfDay(float val) { m_colorAdjustments.timeOfDay = qBound(0.0f, val, 1.0f); }
     ColorGradeMode colorGradeMode() const { return m_colorAdjustments.mode; }
     void setColorGradeMode(ColorGradeMode mode) { m_colorAdjustments.mode = mode; }
     const ColorCurve& lumaCurve() const { return m_colorAdjustments.lumaCurve; }

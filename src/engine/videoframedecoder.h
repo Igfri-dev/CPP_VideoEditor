@@ -35,13 +35,15 @@ private:
         int height = 0;
         int64_t lastDecodedPts = -1;
         QImage lastGoodFrame;
+        SwsContext *swsCtx = nullptr;
     };
 
-    DecoderContext* getOrCreateContext(const QString &filePath);
+    DecoderContext* getOrCreateContext(const QString &filePath, bool isThumbnail = false);
     void closeContext(DecoderContext *ctx);
 
     QMutex m_mutex;
     QMap<QString, DecoderContext*> m_contexts;
+    QMap<QString, DecoderContext*> m_thumbContexts;
     QCache<QString, QImage> m_frameCache;
     QMap<QString, QImage> m_imageCache;
     QMap<QString, QSize> m_dimensionsCache;

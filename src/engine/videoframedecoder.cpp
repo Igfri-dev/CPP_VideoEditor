@@ -4,6 +4,7 @@
 #include <QImageReader>
 #include <QMutexLocker>
 #include <QPainter>
+#include <QThread>
 
 VideoFrameDecoder& VideoFrameDecoder::instance()
 {
@@ -31,11 +32,19 @@ void VideoFrameDecoder::clearCache()
         closeContext(it.value());
     }
     m_contexts.clear();
+    for (auto it = m_thumbContexts.begin(); it != m_thumbContexts.end(); ++it) {
+        closeContext(it.value());
+    }
+    m_thumbContexts.clear();
 }
 
 void VideoFrameDecoder::closeContext(DecoderContext *ctx)
 {
     if (!ctx) return;
+    if (ctx->swsCtx) {
+        sws_freeContext(ctx->swsCtx);
+        ctx->swsCtx = nullptr;
+    }
     if (ctx->codecCtx) {
         avcodec_free_context(&ctx->codecCtx);
     }
@@ -45,10 +54,11 @@ void VideoFrameDecoder::closeContext(DecoderContext *ctx)
     delete ctx;
 }
 
-VideoFrameDecoder::DecoderContext* VideoFrameDecoder::getOrCreateContext(const QString &filePath)
+VideoFrameDecoder::DecoderContext* VideoFrameDecoder::getOrCreateContext(const QString &filePath, bool isThumbnail)
 {
-    if (m_contexts.contains(filePath)) {
-        return m_contexts.value(filePath);
+    auto &map = isThumbnail ? m_thumbContexts : m_contexts;
+    if (map.contains(filePath)) {
+        return map.value(filePath);
     }
 
     AVFormatContext *fmtCtx = nullptr;
@@ -82,9 +92,18 @@ VideoFrameDecoder::DecoderContext* VideoFrameDecoder::getOrCreateContext(const Q
     }
 
     AVCodecContext *codecCtx = avcodec_alloc_context3(codec);
-    if (!codecCtx || avcodec_parameters_to_context(codecCtx, codecPar) < 0 ||
-        avcodec_open2(codecCtx, codec, nullptr) != 0) {
+    if (!codecCtx || avcodec_parameters_to_context(codecCtx, codecPar) < 0) {
         if (codecCtx) avcodec_free_context(&codecCtx);
+        avformat_close_input(&fmtCtx);
+        return nullptr;
+    }
+
+    // Enable multithreaded slice & frame decoding for high performance on 1080p / 4K
+    codecCtx->thread_count = qBound(1, QThread::idealThreadCount(), 16);
+    codecCtx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+
+    if (avcodec_open2(codecCtx, codec, nullptr) != 0) {
+        avcodec_free_context(&codecCtx);
         avformat_close_input(&fmtCtx);
         return nullptr;
     }
@@ -100,7 +119,7 @@ VideoFrameDecoder::DecoderContext* VideoFrameDecoder::getOrCreateContext(const Q
         ctx->durationMs = (fmtCtx->duration * 1000) / AV_TIME_BASE;
     }
 
-    m_contexts.insert(filePath, ctx);
+    map.insert(filePath, ctx);
     return ctx;
 }
 
@@ -198,7 +217,7 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
         return *cached;
     }
 
-    DecoderContext *ctx = getOrCreateContext(filePath);
+    DecoderContext *ctx = getOrCreateContext(filePath, isThumb);
     if (!ctx) {
         return QImage();
     }
@@ -230,7 +249,7 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
         int outW = f->width;
         int outH = f->height;
         if (targetSize.isValid() && targetSize.width() > 0 && targetSize.height() > 0) {
-            if (targetSize.width() <= 320 && targetSize.height() <= 320) {
+            if (isThumb) {
                 // Downscale for thumbnails preserving aspect ratio strictly
                 QSize thumbSize = QSize(f->width, f->height).scaled(targetSize, Qt::KeepAspectRatio);
                 outW = thumbSize.width();
@@ -238,15 +257,15 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
             }
         }
         QImage img(outW, outH, QImage::Format_RGB32);
-        SwsContext *sws = sws_getContext(
+        ctx->swsCtx = sws_getCachedContext(
+            ctx->swsCtx,
             f->width, f->height, (AVPixelFormat)f->format,
             outW, outH, AV_PIX_FMT_BGRA,
             SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
-        if (sws) {
+        if (ctx->swsCtx) {
             uint8_t *destData[4] = { img.bits(), nullptr, nullptr, nullptr };
             int destLinesize[4] = { (int)img.bytesPerLine(), 0, 0, 0 };
-            sws_scale(sws, f->data, f->linesize, 0, f->height, destData, destLinesize);
-            sws_freeContext(sws);
+            sws_scale(ctx->swsCtx, f->data, f->linesize, 0, f->height, destData, destLinesize);
         }
         return img;
     };
@@ -265,10 +284,6 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
             m_frameCache.insert(fKey, new QImage(result), 1);
             found = true;
             break;
-        } else {
-            QImage fImg = convertFrame(frame);
-            ctx->lastGoodFrame = fImg;
-            m_frameCache.insert(fKey, new QImage(fImg), 1);
         }
     }
 
@@ -290,10 +305,6 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
                         m_frameCache.insert(fKey, new QImage(result), 1);
                         found = true;
                         break;
-                    } else {
-                        QImage fImg = convertFrame(frame);
-                        ctx->lastGoodFrame = fImg;
-                        m_frameCache.insert(fKey, new QImage(fImg), 1);
                     }
                 }
             }

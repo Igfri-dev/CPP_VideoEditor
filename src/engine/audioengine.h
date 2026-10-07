@@ -27,6 +27,7 @@ public:
     bool isPlaying() const { return m_isPlaying; }
     bool isAudioOutputActive() const;
     qint64 currentAudiblePositionMs() const;
+    void feedAudio();
 
 signals:
     void positionAdvanced(qint64 timelineMs);
@@ -54,6 +55,7 @@ private:
 
     qint64 m_startTimelineMs = 0;
     qint64 m_writeTimelineMs = 0;
+    qint64 m_writeSampleIndex = 0;
     qint64 m_lastAudiblePositionMs = 0;
     double m_masterVolume = 1.0;
     bool m_isPlaying = false;

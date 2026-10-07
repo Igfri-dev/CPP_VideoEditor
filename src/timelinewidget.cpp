@@ -65,6 +65,7 @@ TimelineWidget::~TimelineWidget()
 void TimelineWidget::setPixelsPerSecond(double pps)
 {
     m_pixelsPerSecond = qBound(10.0, pps, 500.0);
+    invalidateFilmstripCache();
     updateScrollBars();
     update();
 }
@@ -362,8 +363,23 @@ void TimelineWidget::onVScrollValueChanged(int value)
     update();
 }
 
+void TimelineWidget::setIsPlaying(bool playing)
+{
+    m_isPlaying = playing;
+}
+
+void TimelineWidget::invalidateFilmstripCache(qint64 clipId)
+{
+    if (clipId < 0) {
+        m_filmstripCache.clear();
+    } else {
+        m_filmstripCache.remove(clipId);
+    }
+}
+
 void TimelineWidget::onModelChanged()
 {
+    invalidateFilmstripCache();
     updateScrollBars();
     update();
 }
@@ -681,29 +697,52 @@ void TimelineWidget::paintEvent(QPaintEvent *event)
                         int thumbW = 56;
                         int thumbH = cRect.height() - 4;
                         if (cRect.width() >= 24 && thumbH > 10) {
-                            int numThumbs = qBound(1, cRect.width() / thumbW, 20);
-                            p.save();
-                            p.setClipRect(cRect.adjusted(1, 1, -1, -1));
+                            auto it = m_filmstripCache.find(clip.id());
+                            bool cacheValid = (it != m_filmstripCache.end() &&
+                                               it->width == cRect.width() &&
+                                               it->height == thumbH &&
+                                               it->sourceInMs == clip.sourceInMs() &&
+                                               it->durationMs == clip.durationMs() &&
+                                               qAbs(it->speed - clip.speed()) < 0.001);
 
-                            for (int ti = 0; ti < numThumbs; ++ti) {
-                                int tx = cRect.left() + ti * thumbW;
-                                double progress = (numThumbs > 1) ? static_cast<double>(ti) / (numThumbs - 1) : 0.0;
-                                qint64 frameSourceMs = clip.sourceInMs() + qRound64(progress * clip.durationMs() * clip.speed());
+                            if (cacheValid) {
+                                p.drawPixmap(cRect.left(), cRect.top() + 2, it->pixmap);
+                            } else if (!m_isPlaying) {
+                                int numThumbs = qBound(1, cRect.width() / thumbW, 20);
+                                QPixmap stripPix(cRect.width(), thumbH);
+                                stripPix.fill(Qt::transparent);
+                                QPainter sp(&stripPix);
 
-                                QImage thumb = VideoFrameDecoder::instance().getFrame(clip.filePath(), frameSourceMs, QSize(thumbW, thumbH));
-                                if (!thumb.isNull()) {
-                                    p.drawImage(QRect(tx, cRect.top() + 2, thumbW, thumbH), thumb);
+                                for (int ti = 0; ti < numThumbs; ++ti) {
+                                    int tx = ti * thumbW;
+                                    double progress = (numThumbs > 1) ? static_cast<double>(ti) / (numThumbs - 1) : 0.0;
+                                    qint64 frameSourceMs = clip.sourceInMs() + qRound64(progress * clip.durationMs() * clip.speed());
+
+                                    QImage thumb = VideoFrameDecoder::instance().getFrame(clip.filePath(), frameSourceMs, QSize(thumbW, thumbH));
+                                    if (!thumb.isNull()) {
+                                        sp.drawImage(QRect(tx, 0, thumbW, thumbH), thumb);
+                                    }
                                 }
+
+                                // Dark gradient overlay at the top for title legibility
+                                QLinearGradient grad(0, 0, 0, thumbH);
+                                grad.setColorAt(0.0, QColor(0, 0, 0, 190));
+                                grad.setColorAt(0.45, QColor(0, 0, 0, 110));
+                                grad.setColorAt(1.0, QColor(0, 0, 0, 140));
+                                sp.fillRect(QRect(0, 0, cRect.width(), thumbH), grad);
+                                sp.end();
+
+                                FilmstripCacheItem item;
+                                item.width = cRect.width();
+                                item.height = thumbH;
+                                item.sourceInMs = clip.sourceInMs();
+                                item.durationMs = clip.durationMs();
+                                item.speed = clip.speed();
+                                item.pixmap = stripPix;
+                                m_filmstripCache[clip.id()] = item;
+
+                                p.drawPixmap(cRect.left(), cRect.top() + 2, stripPix);
                             }
-
-                            // Dark gradient overlay at the top for title legibility
-                            QLinearGradient grad(cRect.topLeft(), cRect.bottomLeft());
-                            grad.setColorAt(0.0, QColor(0, 0, 0, 190));
-                            grad.setColorAt(0.45, QColor(0, 0, 0, 110));
-                            grad.setColorAt(1.0, QColor(0, 0, 0, 140));
-                            p.fillRect(cRect, grad);
-
-                            p.restore();
                         }
                     }
 

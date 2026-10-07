@@ -12,6 +12,7 @@
 #include <QFontComboBox>
 #include <QListWidget>
 #include <QStackedWidget>
+#include <QGroupBox>
 #include "curveeditorwidget.h"
 #include "../core/timelinemodel.h"
 
@@ -110,6 +111,12 @@ public slots:
     void onGlobalLumaCurveChanged(const ColorCurve &curve);
     void onGlobalLumaCurveCommitted(const ColorCurve &curve);
     void onGlobalResetCurvesClicked();
+
+    // Time of Day slots
+    void onClipTimeOfDayToggled(bool enabled);
+    void onClipTimeOfDayChanged(int value);
+    void onGlobalTimeOfDayToggled(bool enabled);
+    void onGlobalTimeOfDayChanged(int value);
 
 private slots:
     void onOpacityChanged(int value);
@@ -272,6 +279,16 @@ private:
     CurveEditorWidget *m_clipLumaCurveWidget = nullptr;
     QPushButton *m_clipResetCurvesBtn = nullptr;
 
+    // Clip Time of Day controls
+    QGroupBox *m_clipTimeOfDayGroup = nullptr;
+    QCheckBox *m_clipTimeOfDayCheck = nullptr;
+    QSlider *m_clipTimeOfDaySlider = nullptr;
+    QLabel *m_clipTimeOfDayBadge = nullptr;
+    QPushButton *m_clipPresetNightBtn = nullptr;
+    QPushButton *m_clipPresetMorningBtn = nullptr;
+    QPushButton *m_clipPresetDayBtn = nullptr;
+    QPushButton *m_clipPresetSunsetBtn = nullptr;
+
     // Effects Stack controls
     QWidget *m_effectsSection = nullptr;
     QPushButton *m_addEffectBtn = nullptr;
@@ -322,6 +339,18 @@ private:
     CurveEditorWidget *m_globalColorCurveWidget = nullptr;
     CurveEditorWidget *m_globalLumaCurveWidget = nullptr;
     QPushButton *m_globalResetCurvesBtn = nullptr;
+
+    // Global Time of Day controls
+    QGroupBox *m_globalTimeOfDayGroup = nullptr;
+    QCheckBox *m_globalTimeOfDayCheck = nullptr;
+    QSlider *m_globalTimeOfDaySlider = nullptr;
+    QLabel *m_globalTimeOfDayBadge = nullptr;
+    QPushButton *m_globalPresetNightBtn = nullptr;
+    QPushButton *m_globalPresetMorningBtn = nullptr;
+    QPushButton *m_globalPresetDayBtn = nullptr;
+    QPushButton *m_globalPresetSunsetBtn = nullptr;
+
+    void updateTimeOfDayBadge(QLabel *badge, float val);
 
     QLabel *m_projectDurationLabel = nullptr;
     QLabel *m_projectTracksLabel = nullptr;
