@@ -1,6 +1,12 @@
 #include "mainwindow.h"
 #include "engine/exportdialog.h"
 #include "core/projectserializer.h"
+#include "scopes/videoscopeswindow.h"
+#include "engine/audiomixerdialog.h"
+#include "engine/colormanagementdialog.h"
+#include "engine/proxymanager.h"
+#include "plugins/pluginregistry.h"
+#include <QColorDialog>
 #include <QSplitter>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -51,8 +57,12 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_mediaLibrary, &MediaLibraryWidget::addTextRequested, this, &MainWindow::onAddTextAction);
 
     connect(m_timelineWidget, &TimelineWidget::playheadSeekRequested, m_previewWidget, &PreviewWidget::setPosition);
+    connect(m_timelineWidget, &TimelineWidget::playheadSeekRequested, m_inspectorWidget, &InspectorWidget::setPlayheadPosition);
     connect(m_previewWidget, &PreviewWidget::playheadMoved, m_timelineWidget, &TimelineWidget::setPlayheadPosition);
+    connect(m_previewWidget, &PreviewWidget::playheadMoved, m_inspectorWidget, &InspectorWidget::setPlayheadPosition);
     connect(m_previewWidget, &PreviewWidget::playbackStateChanged, m_timelineWidget, &TimelineWidget::setIsPlaying);
+    connect(m_inspectorWidget, &InspectorWidget::playheadSeekRequested, m_previewWidget, &PreviewWidget::setPosition);
+    connect(m_inspectorWidget, &InspectorWidget::playheadSeekRequested, m_timelineWidget, &TimelineWidget::setPlayheadPosition);
 
     // Selection synchronization between Timeline, Inspector and Preview Gizmo
     connect(m_timelineWidget, &TimelineWidget::clipSelected, m_inspectorWidget, &InspectorWidget::setSelectedClip);
@@ -105,8 +115,17 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_timelineWidget, &TimelineWidget::selectionChanged, this, [this](const QSet<qint64> &ids) {
         if (m_joinBtn) m_joinBtn->setEnabled(ids.size() >= 2);
         if (m_actJoin) m_actJoin->setEnabled(ids.size() >= 2);
+        if (m_compoundBtn) m_compoundBtn->setEnabled(!ids.isEmpty());
+        if (m_actCompoundClip) m_actCompoundClip->setEnabled(!ids.isEmpty());
         if (m_inspectorWidget) m_inspectorWidget->setSelectedClips(ids);
     });
+
+    connect(m_previewWidget, &PreviewWidget::frameRendered, this, [this](const QImage &frame) {
+        if (m_scopesWindow && m_scopesWindow->isVisible()) {
+            m_scopesWindow->updateFrame(frame);
+        }
+    });
+
     updateUndoRedoUi();
     updateDurationUi();
     updateWindowTitle();
@@ -213,6 +232,25 @@ void MainWindow::setupMenus()
     actAddText->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_T));
     connect(actAddText, &QAction::triggered, this, &MainWindow::onAddTextAction);
 
+    editMenu->addSeparator();
+
+    m_actAddAdjustmentLayer = editMenu->addAction("✨ Insertar Capa de Ajuste (Adjustment Layer)");
+    m_actAddAdjustmentLayer->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A));
+    connect(m_actAddAdjustmentLayer, &QAction::triggered, this, &MainWindow::onAddAdjustmentLayerAction);
+
+    m_actAddSolidColor = editMenu->addAction("🎨 Insertar Clip de Color Sólido...");
+    connect(m_actAddSolidColor, &QAction::triggered, this, &MainWindow::onAddSolidColorAction);
+
+    m_actCompoundClip = editMenu->addAction("📦 Crear Clip Compuesto (Compound Clip)");
+    m_actCompoundClip->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C));
+    connect(m_actCompoundClip, &QAction::triggered, this, &MainWindow::onCreateCompoundClipAction);
+
+    m_actDecomposeCompound = editMenu->addAction("📦 Descomponer Clip Compuesto");
+    m_actDecomposeCompound->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_U));
+    connect(m_actDecomposeCompound, &QAction::triggered, this, &MainWindow::onDecomposeCompoundClipAction);
+
+    editMenu->addSeparator();
+
     QAction *actGlobalProps = editMenu->addAction("🌐 Propiedades Generales del Video...");
     actGlobalProps->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
     connect(actGlobalProps, &QAction::triggered, m_inspectorWidget, &InspectorWidget::showGlobalProperties);
@@ -226,6 +264,14 @@ void MainWindow::setupMenus()
     QAction *actDelete = editMenu->addAction("Eliminar clip");
     actDelete->setShortcut(QKeySequence::Delete);
     connect(actDelete, &QAction::triggered, this, &MainWindow::onDeleteAction);
+
+    editMenu->addSeparator();
+    QAction *actPerfEdit = editMenu->addAction("⚙️ Preferencias de Rendimiento y GPU...");
+    connect(actPerfEdit, &QAction::triggered, this, [this]() {
+        if (m_previewWidget) {
+            m_previewWidget->openPerformanceDialog();
+        }
+    });
 
     // Ver
     QMenu *viewMenu = mb->addMenu("Ver");
@@ -243,6 +289,29 @@ void MainWindow::setupMenus()
 
     viewMenu->addSeparator();
 
+    m_actScopes = viewMenu->addAction("📊 Visor de Scopes de Video (Scopes)...");
+    m_actScopes->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
+    connect(m_actScopes, &QAction::triggered, this, &MainWindow::onOpenScopes);
+
+    QMenu *proxyMenu = viewMenu->addMenu("⚡ Modo Proxy / Render Cache");
+    m_actProxyMode = proxyMenu->addAction("Activar Modo Proxy (Draft 50%)");
+    m_actProxyMode->setCheckable(true);
+    m_actProxyMode->setChecked(ProxyManager::instance().isProxyModeEnabled());
+    m_actProxyMode->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P));
+    connect(m_actProxyMode, &QAction::triggered, this, &MainWindow::onToggleProxyMode);
+
+    QAction *actClearCache = proxyMenu->addAction("Vaciar Render Cache...");
+    connect(actClearCache, &QAction::triggered, this, [this]() {
+        ProxyManager::instance().clearRenderCache();
+        QMessageBox::information(this, "Render Cache", "El caché de renderizado en memoria ha sido vaciado correctamente.");
+        if (m_previewWidget) m_previewWidget->updatePreview();
+    });
+
+    m_actColorManagement = viewMenu->addAction("🎨 Gestión de Color del Proyecto (Color Management)...");
+    connect(m_actColorManagement, &QAction::triggered, this, &MainWindow::onOpenColorManagementAction);
+
+    viewMenu->addSeparator();
+
     m_actToggleSnap = viewMenu->addAction("🧲 Snapping Magnético");
     m_actToggleSnap->setCheckable(true);
     m_actToggleSnap->setChecked(true);
@@ -255,11 +324,52 @@ void MainWindow::setupMenus()
     m_actToggleSafeAreas->setShortcut(QKeySequence(Qt::ALT | Qt::Key_S));
     connect(m_actToggleSafeAreas, &QAction::triggered, this, &MainWindow::onToggleSafeAreas);
 
+    viewMenu->addSeparator();
+    QAction *actGpuView = viewMenu->addAction("⚙️ Rendimiento y Aceleración por GPU...");
+    connect(actGpuView, &QAction::triggered, this, [this]() {
+        if (m_previewWidget) {
+            m_previewWidget->openPerformanceDialog();
+        }
+    });
+
+    // Herramientas (New Top-Level Menu)
+    QMenu *toolsMenu = mb->addMenu("Herramientas");
+    m_actAudioMixer = toolsMenu->addAction("🎛️ Mezclador de Audio & Master Suite (EQ + Compresor + Limitador)...");
+    m_actAudioMixer->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_M));
+    connect(m_actAudioMixer, &QAction::triggered, this, &MainWindow::onOpenAudioMixerAction);
+
+    toolsMenu->addAction(m_actScopes);
+    toolsMenu->addAction(m_actProxyMode);
+    toolsMenu->addAction(m_actColorManagement);
+    toolsMenu->addSeparator();
+    toolsMenu->addAction(m_actAddAdjustmentLayer);
+    toolsMenu->addAction(m_actCompoundClip);
+
     // Efectos
     QMenu *effectsMenu = mb->addMenu("Efectos");
     TimelineWidget::populateEffectsMenu(effectsMenu, [this](VisualFilter f) {
         m_timelineWidget->applyFilterToSelectedClips(f);
     });
+
+    QMenu *pluginsMenu = effectsMenu->addMenu("🔌 Plugins Externos de Video");
+    for (const auto &p : PluginRegistry::instance().videoPlugins()) {
+        QAction *pAct = pluginsMenu->addAction(QString("🔌 %1").arg(p->name()));
+        connect(pAct, &QAction::triggered, this, [this, p]() {
+            if (!m_timelineWidget) return;
+            const auto selIds = m_timelineWidget->selectedClipIds();
+            for (qint64 cid : selIds) {
+                if (TimelineClip *c = m_timelineModel->findClip(cid)) {
+                    ClipPluginEffect inst;
+                    inst.pluginId = p->id();
+                    for (const auto &def : p->parameters()) {
+                        inst.parameters[def.id] = def.defaultValue;
+                    }
+                    c->addPluginEffect(inst);
+                }
+            }
+            if (m_previewWidget) m_previewWidget->updatePreview();
+        });
+    }
 
     // Ayuda
     QMenu *helpMenu = mb->addMenu("Ayuda");
@@ -418,6 +528,42 @@ void MainWindow::setupToolbar()
     QPushButton *globalPropsBtn = createToolBtn("🌐 General", "Abrir cuadro de propiedades generales del video (Luminosidad, Brillo, RGB)");
     connect(globalPropsBtn, &QPushButton::clicked, m_inspectorWidget, &InspectorWidget::showGlobalProperties);
     toolbar->addWidget(globalPropsBtn);
+
+    toolbar->addSeparator();
+
+    // 13 Professional Tools Buttons
+    m_scopesBtn = createToolBtn("📊 Scopes", "Visor de Scopes de Video (Waveform, RGB Parade, Vectorscope, Histograma)");
+    m_scopesBtn->setStyleSheet("QPushButton { background-color: #21262d; color: #58a6ff; border: 1px solid #388bfd; border-radius: 4px; padding: 5px 10px; font-weight: bold; font-size: 11px; } QPushButton:hover { background-color: #1f6feb; color: white; }");
+    connect(m_scopesBtn, &QPushButton::clicked, this, &MainWindow::onOpenScopes);
+    toolbar->addWidget(m_scopesBtn);
+
+    m_proxyBtn = createToolBtn("⚡ Proxy (50%)", "Alternar Modo Proxy rápido para edición fluida (Ctrl+Shift+P)");
+    if (ProxyManager::instance().isProxyModeEnabled()) {
+        m_proxyBtn->setStyleSheet("QPushButton { background-color: #238636; color: white; border: 1px solid #2ea043; border-radius: 4px; padding: 5px 10px; font-weight: bold; font-size: 11px; }");
+        m_proxyBtn->setText("⚡ Proxy ACTIVO");
+    }
+    connect(m_proxyBtn, &QPushButton::clicked, this, &MainWindow::onToggleProxyMode);
+    toolbar->addWidget(m_proxyBtn);
+
+    m_adjLayerBtn = createToolBtn("✨ Capa Ajuste", "Insertar Capa de Ajuste sobre las pistas inferiores (Ctrl+Shift+A)");
+    m_adjLayerBtn->setStyleSheet("QPushButton { background-color: #21262d; color: #a371f7; border: 1px solid #8957e5; border-radius: 4px; padding: 5px 10px; font-weight: bold; font-size: 11px; } QPushButton:hover { background-color: #8957e5; color: white; }");
+    connect(m_adjLayerBtn, &QPushButton::clicked, this, &MainWindow::onAddAdjustmentLayerAction);
+    toolbar->addWidget(m_adjLayerBtn);
+
+    m_compoundBtn = createToolBtn("📦 Compuesto", "Crear Clip Compuesto con los clips seleccionados (Ctrl+Shift+C)");
+    m_compoundBtn->setStyleSheet("QPushButton { background-color: #21262d; color: #79c0ff; border: 1px solid #388bfd; border-radius: 4px; padding: 5px 10px; font-weight: bold; font-size: 11px; } QPushButton:hover { background-color: #388bfd; color: white; }");
+    connect(m_compoundBtn, &QPushButton::clicked, this, &MainWindow::onCreateCompoundClipAction);
+    toolbar->addWidget(m_compoundBtn);
+
+    m_audioMixerBtn = createToolBtn("🎛️ Audio Master", "Mezclador de Audio & Master Suite: EQ Paramétrico, Compresor y Limitador (Ctrl+Shift+M)");
+    m_audioMixerBtn->setStyleSheet("QPushButton { background-color: #21262d; color: #e3b341; border: 1px solid #d29922; border-radius: 4px; padding: 5px 10px; font-weight: bold; font-size: 11px; } QPushButton:hover { background-color: #d29922; color: #0d1117; }");
+    connect(m_audioMixerBtn, &QPushButton::clicked, this, &MainWindow::onOpenAudioMixerAction);
+    toolbar->addWidget(m_audioMixerBtn);
+
+    m_colorMgmtBtn = createToolBtn("🎨 Color Gamut", "Gestión de Espacio de Color del Proyecto (Rec.709, Display P3, Rec.2020, HDR)");
+    m_colorMgmtBtn->setStyleSheet("QPushButton { background-color: #21262d; color: #f0883e; border: 1px solid #f0883e; border-radius: 4px; padding: 5px 10px; font-weight: bold; font-size: 11px; } QPushButton:hover { background-color: #f0883e; color: white; }");
+    connect(m_colorMgmtBtn, &QPushButton::clicked, this, &MainWindow::onOpenColorManagementAction);
+    toolbar->addWidget(m_colorMgmtBtn);
 
     toolbar->addSeparator();
 
@@ -1011,5 +1157,206 @@ void MainWindow::closeEvent(QCloseEvent *event)
         }
     } else {
         event->accept();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 13 Professional Features Slots Implementation
+// ---------------------------------------------------------------------------
+void MainWindow::onOpenScopes()
+{
+    if (!m_scopesWindow) {
+        m_scopesWindow = new VideoScopesWindow(this);
+    }
+    m_scopesWindow->show();
+    m_scopesWindow->raise();
+    m_scopesWindow->activateWindow();
+    if (m_previewWidget) {
+        m_previewWidget->updatePreview();
+    }
+}
+
+void MainWindow::onToggleProxyMode()
+{
+    bool current = ProxyManager::instance().isProxyModeEnabled();
+    bool next = !current;
+    ProxyManager::instance().setProxyModeEnabled(next);
+
+    if (m_actProxyMode) m_actProxyMode->setChecked(next);
+    if (m_proxyBtn) {
+        if (next) {
+            m_proxyBtn->setStyleSheet("QPushButton { background-color: #238636; color: white; border: 1px solid #2ea043; border-radius: 4px; padding: 5px 10px; font-weight: bold; font-size: 11px; }");
+            m_proxyBtn->setText("⚡ Proxy ACTIVO");
+        } else {
+            m_proxyBtn->setStyleSheet("QPushButton { background-color: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 5px 10px; font-weight: bold; font-size: 11px; }");
+            m_proxyBtn->setText("⚡ Proxy (50%)");
+        }
+    }
+    if (m_previewWidget) {
+        m_previewWidget->updatePreview();
+    }
+}
+
+void MainWindow::onAddAdjustmentLayerAction()
+{
+    if (!m_timelineModel) return;
+
+    qint64 playhead = m_previewWidget ? m_previewWidget->currentPosition() : 0;
+    qint64 newId = m_timelineModel->addAdjustmentClip(playhead, 5000);
+    if (newId > 0) {
+        TimelineClip *c = m_timelineModel->findClip(newId);
+        qint64 targetMs = c ? c->timelineInMs() : playhead;
+        if (m_timelineWidget) {
+            m_timelineWidget->setPlayheadPosition(targetMs);
+            m_timelineWidget->setSelectedClipId(newId);
+        }
+        if (m_previewWidget) {
+            m_previewWidget->setPosition(targetMs);
+            m_previewWidget->setSelectedClipId(newId);
+            m_previewWidget->updatePreview();
+        }
+        if (m_inspectorWidget) {
+            m_inspectorWidget->setSelectedClip(newId);
+        }
+    }
+}
+
+void MainWindow::onAddSolidColorAction()
+{
+    if (!m_timelineModel) return;
+    QColor chosen = QColorDialog::getColor(QColor("#1f6feb"), this, "Seleccionar Color Sólido");
+    if (!chosen.isValid()) return;
+
+    qint64 targetTrackId = -1;
+    if (!m_timelineModel->videoTracks().isEmpty()) {
+        targetTrackId = m_timelineModel->videoTracks().first().id();
+    } else {
+        targetTrackId = m_timelineModel->addTrack(TrackType::Video, "Video 1");
+    }
+
+    qint64 playhead = m_previewWidget ? m_previewWidget->currentPosition() : 0;
+    qint64 dur = 5000;
+
+    TimelineClip solidClip;
+    solidClip.setType(ClipType::SolidColor);
+    solidClip.setName(QString("Color Sólido (%1)").arg(chosen.name()));
+    solidClip.setColor(chosen);
+    solidClip.setBackgroundColor(chosen);
+    solidClip.setTimelineInMs(playhead);
+    solidClip.setTimelineOutMs(playhead + dur);
+    solidClip.setSourceInMs(0);
+    solidClip.setSourceOutMs(dur);
+
+    qint64 newId = m_timelineModel->addClip(solidClip, targetTrackId);
+    if (m_timelineWidget) m_timelineWidget->setSelectedClipId(newId);
+    if (m_inspectorWidget) m_inspectorWidget->setSelectedClip(newId);
+    if (m_previewWidget) m_previewWidget->updatePreview();
+}
+
+void MainWindow::onCreateCompoundClipAction()
+{
+    if (!m_timelineModel || !m_timelineWidget) return;
+    const QSet<qint64> selIds = m_timelineWidget->selectedClipIds();
+    if (selIds.isEmpty()) {
+        QMessageBox::information(this, "Clip Compuesto", "Selecciona al menos un clip en la línea de tiempo para crear un Clip Compuesto.");
+        return;
+    }
+
+    qint64 minIn = std::numeric_limits<qint64>::max();
+    qint64 maxOut = 0;
+    qint64 firstTrackId = -1;
+
+    std::shared_ptr<TimelineModel> subTimeline = std::make_shared<TimelineModel>();
+    qint64 subTrackId = subTimeline->addTrack(TrackType::Video, "Pista Anidada 1");
+
+    for (qint64 cid : selIds) {
+        TimelineClip *c = m_timelineModel->findClip(cid);
+        if (c) {
+            minIn = qMin(minIn, c->timelineInMs());
+            maxOut = qMax(maxOut, c->timelineOutMs());
+            if (firstTrackId < 0) {
+                if (TimelineTrack *t = m_timelineModel->findTrackForClip(cid)) {
+                    firstTrackId = t->id();
+                }
+            }
+            TimelineClip copyClip = *c;
+            subTimeline->addClip(copyClip, subTrackId);
+        }
+    }
+
+    if (firstTrackId < 0 && !m_timelineModel->videoTracks().isEmpty()) {
+        firstTrackId = m_timelineModel->videoTracks().first().id();
+    }
+
+    for (qint64 cid : selIds) {
+        m_timelineModel->deleteClip(cid);
+    }
+
+    TimelineClip compound;
+    compound.setType(ClipType::Compound);
+    compound.setName("Clip Compuesto Anidado");
+    compound.setTimelineInMs(minIn);
+    compound.setTimelineOutMs(maxOut);
+    compound.setSourceInMs(0);
+    compound.setSourceOutMs(maxOut - minIn);
+    compound.setColor(QColor("#1f6feb"));
+    compound.setSubTimeline(subTimeline);
+
+    qint64 newId = m_timelineModel->addClip(compound, firstTrackId);
+    m_timelineWidget->setSelectedClipId(newId);
+    m_inspectorWidget->setSelectedClip(newId);
+    m_previewWidget->updatePreview();
+}
+
+void MainWindow::onDecomposeCompoundClipAction()
+{
+    if (!m_timelineModel || !m_timelineWidget) return;
+    qint64 selId = m_timelineWidget->selectedClipId();
+    TimelineClip *c = m_timelineModel->findClip(selId);
+    if (!c || c->type() != ClipType::Compound || !c->subTimeline()) {
+        QMessageBox::information(this, "Descomponer Clip Compuesto", "Selecciona un Clip Compuesto para descomponerlo.");
+        return;
+    }
+
+    TimelineTrack *track = m_timelineModel->findTrackForClip(c->id());
+    qint64 trackId = track ? track->id() : (m_timelineModel->videoTracks().isEmpty() ? -1 : m_timelineModel->videoTracks().first().id());
+    std::shared_ptr<TimelineModel> sub = c->subTimeline();
+    qint64 baseTimelineIn = c->timelineInMs();
+
+    for (const TimelineTrack &st : sub->videoTracks()) {
+        for (const TimelineClip &sc : st.clips()) {
+            TimelineClip restored = sc;
+            restored.setTimelineInMs(baseTimelineIn + sc.timelineInMs());
+            restored.setTimelineOutMs(baseTimelineIn + sc.timelineOutMs());
+            m_timelineModel->addClip(restored, trackId);
+        }
+    }
+    for (const TimelineTrack &st : sub->audioTracks()) {
+        for (const TimelineClip &sc : st.clips()) {
+            TimelineClip restored = sc;
+            restored.setTimelineInMs(baseTimelineIn + sc.timelineInMs());
+            restored.setTimelineOutMs(baseTimelineIn + sc.timelineOutMs());
+            m_timelineModel->addClip(restored, trackId);
+        }
+    }
+
+    m_timelineModel->deleteClip(c->id());
+    m_timelineWidget->update();
+    m_previewWidget->updatePreview();
+}
+
+void MainWindow::onOpenAudioMixerAction()
+{
+    AudioMixerDialog dlg(this);
+    dlg.exec();
+}
+
+void MainWindow::onOpenColorManagementAction()
+{
+    ColorManagementDialog dlg(this);
+    if (dlg.exec() == QDialog::Accepted) {
+        if (m_previewWidget) {
+            m_previewWidget->updatePreview();
+        }
     }
 }

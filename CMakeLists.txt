@@ -20,7 +20,7 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
 # Find Qt 6
-find_package(Qt6 COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets REQUIRED)
+find_package(Qt6 COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets OpenGL OpenGLWidgets REQUIRED)
 
 # -----------------------------------------------------------------------------
 # Find FFmpeg (Multiplatform: macOS Homebrew, Linux PkgConfig, Windows vcpkg/FFMPEG_DIR)
@@ -80,6 +80,7 @@ add_executable(CPP_VideoEditor
     src/previewwidget.cpp
     src/timelinewidget.h
     src/timelinewidget.cpp
+    src/core/keyframe.h
     src/core/clip.h
     src/core/clip.cpp
     src/core/colorcurve.h
@@ -99,6 +100,10 @@ add_executable(CPP_VideoEditor
     src/medialibrary/medialibrarywidget.cpp
     src/engine/videoframedecoder.h
     src/engine/videoframedecoder.cpp
+    src/engine/gpuaccelerationmanager.h
+    src/engine/gpuaccelerationmanager.cpp
+    src/engine/gpusettingsdialog.h
+    src/engine/gpusettingsdialog.cpp
     src/engine/waveformgenerator.h
     src/engine/waveformgenerator.cpp
     src/engine/videocompositor.h
@@ -120,6 +125,31 @@ add_executable(CPP_VideoEditor
     src/snapping/timelinesnappingengine.cpp
     src/filters/TimeOfDayFilter.h
     src/filters/TimeOfDayFilter.cpp
+    src/filters/chromakey.h
+    src/filters/chromakey.cpp
+    src/core/colormanagement.h
+    src/core/colormanagement.cpp
+    src/engine/audioeffects.h
+    src/engine/audioeffects.cpp
+    src/engine/proxymanager.h
+    src/engine/proxymanager.cpp
+    src/engine/videostabilizer.h
+    src/engine/videostabilizer.cpp
+    src/scopes/videoscopeswidget.h
+    src/scopes/videoscopeswidget.cpp
+    src/scopes/videoscopeswindow.h
+    src/scopes/videoscopeswindow.cpp
+    src/engine/audiomixerdialog.h
+    src/engine/audiomixerdialog.cpp
+    src/engine/colormanagementdialog.h
+    src/engine/colormanagementdialog.cpp
+    src/tracking/motiontracker.h
+    src/tracking/motiontracker.cpp
+    src/tracking/motiontrackingdialog.h
+    src/tracking/motiontrackingdialog.cpp
+    src/plugins/plugininterface.h
+    src/plugins/pluginregistry.h
+    src/plugins/pluginregistry.cpp
     resources/main.qrc
 )
 
@@ -131,6 +161,9 @@ target_include_directories(CPP_VideoEditor PRIVATE
     src/engine
     src/inspector
     src/snapping
+    src/scopes
+    src/tracking
+    src/plugins
     ${FFMPEG_INCLUDE_DIRS}
 )
 
@@ -140,12 +173,15 @@ target_link_libraries(CPP_VideoEditor PRIVATE
     Qt6::Widgets
     Qt6::Multimedia
     Qt6::MultimediaWidgets
+    Qt6::OpenGL
+    Qt6::OpenGLWidgets
     ${FFMPEG_LIBRARIES}
 )
 
 # Test executable
 add_executable(test_editor
     tests/test_editor.cpp
+    src/core/keyframe.h
     src/core/clip.h
     src/core/clip.cpp
     src/core/colorcurve.h
@@ -167,6 +203,10 @@ add_executable(test_editor
     src/medialibrary/mediaitem.cpp
     src/engine/videoframedecoder.h
     src/engine/videoframedecoder.cpp
+    src/engine/gpuaccelerationmanager.h
+    src/engine/gpuaccelerationmanager.cpp
+    src/engine/gpusettingsdialog.h
+    src/engine/gpusettingsdialog.cpp
     src/engine/waveformgenerator.h
     src/engine/waveformgenerator.cpp
     src/engine/videocompositor.h
@@ -186,6 +226,32 @@ add_executable(test_editor
     src/inspector/curveeditorwidget.cpp
     src/filters/TimeOfDayFilter.h
     src/filters/TimeOfDayFilter.cpp
+    src/filters/chromakey.h
+    src/filters/chromakey.cpp
+    src/core/colormanagement.h
+    src/core/colormanagement.cpp
+    src/engine/audioeffects.h
+    src/engine/audioeffects.cpp
+    src/engine/proxymanager.h
+    src/engine/proxymanager.cpp
+    src/engine/videostabilizer.h
+    src/engine/videostabilizer.cpp
+    src/scopes/videoscopeswidget.h
+    src/scopes/videoscopeswidget.cpp
+    src/scopes/videoscopeswindow.h
+    src/scopes/videoscopeswindow.cpp
+    src/engine/audiomixerdialog.h
+    src/engine/audiomixerdialog.cpp
+    src/engine/colormanagementdialog.h
+    src/engine/colormanagementdialog.cpp
+    src/tracking/motiontracker.h
+    src/tracking/motiontracker.cpp
+    src/tracking/motiontrackingdialog.h
+    src/tracking/motiontrackingdialog.cpp
+    src/plugins/plugininterface.h
+    src/plugins/pluginregistry.h
+    src/plugins/pluginregistry.cpp
+    resources/main.qrc
 )
 
 target_include_directories(test_editor PRIVATE
@@ -196,6 +262,9 @@ target_include_directories(test_editor PRIVATE
     src/engine
     src/snapping
     src/inspector
+    src/scopes
+    src/tracking
+    src/plugins
     ${FFMPEG_INCLUDE_DIRS}
 )
 
@@ -204,5 +273,8 @@ target_link_libraries(test_editor PRIVATE
     Qt6::Gui
     Qt6::Widgets
     Qt6::Multimedia
+    Qt6::MultimediaWidgets
+    Qt6::OpenGL
+    Qt6::OpenGLWidgets
     ${FFMPEG_LIBRARIES}
 )

@@ -264,6 +264,82 @@ QJsonObject ProjectSerializer::serializeClip(const TimelineClip &clip, const QSt
         obj["text"] = tObj;
     }
 
+    // Feature 5: Mask
+    if (clip.hasMask()) {
+        QJsonObject mObj;
+        mObj["shape"] = maskShapeToString(clip.mask().shape);
+        mObj["x"] = clip.mask().normalizedRect.x();
+        mObj["y"] = clip.mask().normalizedRect.y();
+        mObj["w"] = clip.mask().normalizedRect.width();
+        mObj["h"] = clip.mask().normalizedRect.height();
+        mObj["feather"] = clip.mask().feather;
+        mObj["opacity"] = clip.mask().opacity;
+        mObj["inverted"] = clip.mask().inverted;
+        if (clip.mask().animCenter.isAnimated()) {
+            mObj["animCenter"] = KeyframeSerialization::animatedPropertyToJson(clip.mask().animCenter);
+        }
+        if (clip.mask().animFeather.isAnimated()) {
+            mObj["animFeather"] = KeyframeSerialization::animatedPropertyToJson(clip.mask().animFeather);
+        }
+        if (clip.mask().animOpacity.isAnimated()) {
+            mObj["animOpacity"] = KeyframeSerialization::animatedPropertyToJson(clip.mask().animOpacity);
+        }
+        obj["mask"] = mObj;
+    }
+
+    // Feature 6: Speed Ramp
+    if (clip.hasSpeedRamp()) {
+        QJsonObject srObj;
+        srObj["animSpeed"] = KeyframeSerialization::animatedPropertyToJson(clip.speedRamp().animSpeed);
+        obj["speedRamp"] = srObj;
+    }
+
+    // Feature 7: Chroma Key
+    if (clip.hasChromaKey()) {
+        obj["chromaKey"] = clip.chromaKey().toJson();
+    }
+
+    // Feature 8: Video Stabilization
+    if (clip.hasStabilization()) {
+        obj["stabilization"] = clip.stabilization().toJson();
+    }
+
+    // Animated Properties / Keyframes
+    if (clip.hasKeyframes()) {
+        QJsonObject animObj;
+        if (clip.animTimeOfDay().isAnimated()) {
+            animObj["timeOfDay"] = KeyframeSerialization::animatedPropertyToJson(clip.animTimeOfDay());
+        }
+        if (clip.animTimeOfDayIntensity().isAnimated()) {
+            animObj["timeOfDayIntensity"] = KeyframeSerialization::animatedPropertyToJson(clip.animTimeOfDayIntensity());
+        }
+        if (clip.animBrightness().isAnimated()) {
+            animObj["brightness"] = KeyframeSerialization::animatedPropertyToJson(clip.animBrightness());
+        }
+        if (clip.animLuminosity().isAnimated()) {
+            animObj["luminosity"] = KeyframeSerialization::animatedPropertyToJson(clip.animLuminosity());
+        }
+        if (clip.animOpacity().isAnimated()) {
+            animObj["opacity"] = KeyframeSerialization::animatedPropertyToJson(clip.animOpacity());
+        }
+        if (clip.animVolume().isAnimated()) {
+            animObj["volume"] = KeyframeSerialization::animatedPropertyToJson(clip.animVolume());
+        }
+        if (clip.animScaleX().isAnimated()) {
+            animObj["scaleX"] = KeyframeSerialization::animatedPropertyToJson(clip.animScaleX());
+        }
+        if (clip.animScaleY().isAnimated()) {
+            animObj["scaleY"] = KeyframeSerialization::animatedPropertyToJson(clip.animScaleY());
+        }
+        if (clip.animRotation().isAnimated()) {
+            animObj["rotation"] = KeyframeSerialization::animatedPropertyToJson(clip.animRotation());
+        }
+        if (clip.animPosition().isAnimated()) {
+            animObj["position"] = KeyframeSerialization::animatedPropertyToJson(clip.animPosition());
+        }
+        obj["animatedProperties"] = animObj;
+    }
+
     return obj;
 }
 
@@ -283,6 +359,9 @@ TimelineClip ProjectSerializer::deserializeClip(const QJsonObject &obj, const QS
     if (typeStr == "Audio") clip.setType(ClipType::Audio);
     else if (typeStr == "Image") clip.setType(ClipType::Image);
     else if (typeStr == "Text") clip.setType(ClipType::Text);
+    else if (typeStr == "Adjustment" || typeStr == "Capa de ajuste") clip.setType(ClipType::Adjustment);
+    else if (typeStr == "Compound" || typeStr == "Clip compuesto") clip.setType(ClipType::Compound);
+    else if (typeStr == "SolidColor" || typeStr == "Color sólido" || typeStr == "Color solido") clip.setType(ClipType::SolidColor);
     else clip.setType(ClipType::Video);
 
     clip.setTimelineInMs(obj.value("timelineInMs").toVariant().toLongLong());
@@ -351,6 +430,85 @@ TimelineClip ProjectSerializer::deserializeClip(const QJsonObject &obj, const QS
         clip.setTextBoxHeight(tObj.value("textBoxHeight").toInt(0));
     }
 
+    // Animated Properties / Keyframes
+    if (obj.contains("animatedProperties")) {
+        QJsonObject animObj = obj.value("animatedProperties").toObject();
+        if (animObj.contains("timeOfDay")) {
+            clip.setAnimTimeOfDay(KeyframeSerialization::animatedPropertyFromJson<float>(animObj.value("timeOfDay").toObject(), clip.timeOfDay()));
+        }
+        if (animObj.contains("timeOfDayIntensity")) {
+            clip.setAnimTimeOfDayIntensity(KeyframeSerialization::animatedPropertyFromJson<float>(animObj.value("timeOfDayIntensity").toObject(), clip.colorAdjustments().timeOfDayIntensity));
+        }
+        if (animObj.contains("brightness")) {
+            clip.setAnimBrightness(KeyframeSerialization::animatedPropertyFromJson<int>(animObj.value("brightness").toObject(), clip.brightness()));
+        }
+        if (animObj.contains("luminosity")) {
+            clip.setAnimLuminosity(KeyframeSerialization::animatedPropertyFromJson<int>(animObj.value("luminosity").toObject(), clip.luminosity()));
+        }
+        if (animObj.contains("opacity")) {
+            clip.setAnimOpacity(KeyframeSerialization::animatedPropertyFromJson<double>(animObj.value("opacity").toObject(), clip.opacity()));
+        }
+        if (animObj.contains("volume")) {
+            clip.setAnimVolume(KeyframeSerialization::animatedPropertyFromJson<double>(animObj.value("volume").toObject(), clip.volume()));
+        }
+        if (animObj.contains("scaleX")) {
+            clip.setAnimScaleX(KeyframeSerialization::animatedPropertyFromJson<double>(animObj.value("scaleX").toObject(), clip.scaleX()));
+        }
+        if (animObj.contains("scaleY")) {
+            clip.setAnimScaleY(KeyframeSerialization::animatedPropertyFromJson<double>(animObj.value("scaleY").toObject(), clip.scaleY()));
+        }
+        if (animObj.contains("rotation")) {
+            clip.setAnimRotation(KeyframeSerialization::animatedPropertyFromJson<double>(animObj.value("rotation").toObject(), clip.rotation()));
+        }
+        if (animObj.contains("position")) {
+            clip.setAnimPosition(KeyframeSerialization::animatedPropertyFromJson<QPointF>(animObj.value("position").toObject(), QPointF(clip.posX(), clip.posY())));
+        }
+    }
+
+    // Feature 5: Mask
+    if (obj.contains("mask")) {
+        QJsonObject mObj = obj.value("mask").toObject();
+        ClipMask mask;
+        mask.enabled = true;
+        mask.shape = stringToMaskShape(mObj.value("shape").toString());
+        mask.normalizedRect = QRectF(mObj.value("x").toDouble(0.2),
+                                     mObj.value("y").toDouble(0.2),
+                                     mObj.value("w").toDouble(0.6),
+                                     mObj.value("h").toDouble(0.6));
+        mask.feather = mObj.value("feather").toInt(0);
+        mask.opacity = mObj.value("opacity").toDouble(1.0);
+        mask.inverted = mObj.value("inverted").toBool(false);
+        if (mObj.contains("animCenter")) {
+            mask.animCenter = KeyframeSerialization::animatedPropertyFromJson<QPointF>(mObj.value("animCenter").toObject(), QPointF(0.5, 0.5));
+        }
+        if (mObj.contains("animFeather")) {
+            mask.animFeather = KeyframeSerialization::animatedPropertyFromJson<int>(mObj.value("animFeather").toObject(), 0);
+        }
+        if (mObj.contains("animOpacity")) {
+            mask.animOpacity = KeyframeSerialization::animatedPropertyFromJson<double>(mObj.value("animOpacity").toObject(), 1.0);
+        }
+        clip.setMask(mask);
+    }
+
+    // Feature 6: Speed Ramp
+    if (obj.contains("speedRamp")) {
+        QJsonObject srObj = obj.value("speedRamp").toObject();
+        SpeedRamp sr;
+        sr.enabled = true;
+        sr.animSpeed = KeyframeSerialization::animatedPropertyFromJson<double>(srObj.value("animSpeed").toObject(), 1.0);
+        clip.setSpeedRamp(sr);
+    }
+
+    // Feature 7: Chroma Key
+    if (obj.contains("chromaKey")) {
+        clip.setChromaKey(ChromaKeySettings::fromJson(obj.value("chromaKey").toObject()));
+    }
+
+    // Feature 8: Video Stabilization
+    if (obj.contains("stabilization")) {
+        clip.setStabilization(StabilizationSettings::fromJson(obj.value("stabilization").toObject()));
+    }
+
     return clip;
 }
 
@@ -406,7 +564,7 @@ bool ProjectSerializer::saveProject(const QString &filePath, const TimelineModel
             QJsonObject tObj;
             tObj["id"] = static_cast<qint64>(t.id());
             tObj["name"] = t.name();
-            tObj["type"] = (t.type() == TrackType::Video) ? "Video" : "Audio";
+            tObj["type"] = (t.type() == TrackType::Adjustment) ? "Adjustment" : ((t.type() == TrackType::Video) ? "Video" : "Audio");
             tObj["isVisible"] = t.isVisible();
             tObj["isMuted"] = t.isMuted();
             tObj["isSolo"] = t.isSolo();
@@ -507,12 +665,21 @@ bool ProjectSerializer::loadProject(const QString &filePath, TimelineModel *mode
     model->setMarkers(markers);
 
     // 4. Tracks & Clips
-    auto deserializeTracks = [&](const QJsonArray &tArr, TrackType type) {
+    auto deserializeTracks = [&](const QJsonArray &tArr, TrackType defaultType) {
         for (const QJsonValue &tv : tArr) {
             QJsonObject tObj = tv.toObject();
             qint64 trackId = tObj.value("id").toVariant().toLongLong();
             QString name = tObj.value("name").toString();
-            TimelineTrack track(trackId, name, type);
+            TrackType actualType = defaultType;
+            QString typeStr = tObj.value("type").toString();
+            if (typeStr == "Adjustment") {
+                actualType = TrackType::Adjustment;
+            } else if (typeStr == "Video") {
+                actualType = TrackType::Video;
+            } else if (typeStr == "Audio") {
+                actualType = TrackType::Audio;
+            }
+            TimelineTrack track(trackId, name, actualType);
             track.setVisible(tObj.value("isVisible").toBool(true));
             track.setMuted(tObj.value("isMuted").toBool(false));
             track.setSolo(tObj.value("isSolo").toBool(false));
@@ -525,7 +692,7 @@ bool ProjectSerializer::loadProject(const QString &filePath, TimelineModel *mode
                 track.addClip(c);
             }
 
-            if (type == TrackType::Video) {
+            if (actualType == TrackType::Video || actualType == TrackType::Adjustment) {
                 model->videoTracks().append(track);
             } else {
                 model->audioTracks().append(track);

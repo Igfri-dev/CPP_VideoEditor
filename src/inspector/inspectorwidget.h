@@ -13,8 +13,11 @@
 #include <QListWidget>
 #include <QStackedWidget>
 #include <QGroupBox>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
 #include "curveeditorwidget.h"
 #include "../core/timelinemodel.h"
+#include "../core/keyframe.h"
 
 class EffectItemWidget : public QWidget {
     Q_OBJECT
@@ -49,6 +52,27 @@ protected:
     void dropEvent(QDropEvent *event) override;
 };
 
+class KeyframeControlBar : public QWidget {
+    Q_OBJECT
+public:
+    explicit KeyframeControlBar(const QString &propertyName, QWidget *parent = nullptr);
+
+    void updateState(bool isAnimated, bool hasKeyframeAtPlayhead, bool hasPrev, bool hasNext, KeyframeInterpolation currentInterp);
+
+signals:
+    void toggleKeyframeRequested();
+    void prevKeyframeRequested();
+    void nextKeyframeRequested();
+    void interpolationSelected(KeyframeInterpolation interp);
+
+private:
+    QPushButton *m_prevBtn = nullptr;
+    QPushButton *m_toggleBtn = nullptr;
+    QPushButton *m_nextBtn = nullptr;
+    QPushButton *m_interpBtn = nullptr;
+    QMenu *m_interpMenu = nullptr;
+};
+
 class InspectorWidget : public QWidget {
     Q_OBJECT
 
@@ -59,6 +83,9 @@ public:
     void setSelectedClips(const QSet<qint64> &clipIds);
     qint64 selectedClipId() const { return m_selectedClipId; }
     const QSet<qint64>& selectedClipIds() const { return m_selectedClipIds; }
+
+    void setAudioFadePrevious(bool enabled, double durationSec = 1.0);
+    void setAudioMutePrevious(bool enabled);
 
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
@@ -71,8 +98,11 @@ signals:
     void deleteRequested(qint64 clipId);
     void duplicateRequested(qint64 clipId);
     void separateAudioRequested(qint64 clipId);
+    void playheadSeekRequested(qint64 positionMs);
 
 public slots:
+    void setPlayheadPosition(qint64 positionMs);
+    void updateKeyframeUi();
     void showGlobalProperties();
     void showClipProperties();
     void updateGlobalPropertiesUi();
@@ -111,6 +141,7 @@ public slots:
     void onGlobalLumaCurveChanged(const ColorCurve &curve);
     void onGlobalLumaCurveCommitted(const ColorCurve &curve);
     void onGlobalResetCurvesClicked();
+    void onVolumeChanged(int value);
 
     // Time of Day slots
     void onClipTimeOfDayToggled(bool enabled);
@@ -141,7 +172,6 @@ public slots:
 
 private slots:
     void onOpacityChanged(int value);
-    void onVolumeChanged(int value);
     void onFadeInChanged(double value);
     void onFadeOutChanged(double value);
     void onFilterChanged(int index);
@@ -185,6 +215,73 @@ private slots:
     void onBoxWidthChanged(int width);
     void onZIndexChanged(int z);
 
+    // Chroma Key slots
+    void onChromaKeyEnabledToggled(bool enabled);
+    void onChromaKeyColorClicked();
+    void onChromaKeyToleranceChanged(int value);
+    void onChromaKeySmoothnessChanged(int value);
+    void onChromaKeySpillChanged(int value);
+    void onChromaKeyShowMatteToggled(bool checked);
+
+    // Mask & Feather slots
+    void onMaskShapeChanged(int index);
+    void onMaskCenterXChanged(int value);
+    void onMaskCenterYChanged(int value);
+    void onMaskWidthChanged(int value);
+    void onMaskHeightChanged(int value);
+    void onMaskFeatherChanged(int value);
+    void onMaskInvertToggled(bool checked);
+
+    // Video Stabilization slots
+    void onStabilizationEnabledToggled(bool enabled);
+    void onStabilizationRadiusChanged(int value);
+
+    // Speed Ramp slots
+    void onSpeedRampValueChanged(double value);
+    void onSpeedRampEaseToggled(bool checked);
+
+    // Tracking and Plugin slots
+    void onOpenTrackingDialog();
+    void onAddPluginClicked();
+    void onRemovePluginClicked(int index);
+
+    // Timing & Duration slots
+    void onClipStartSpinChanged(double val);
+    void onClipEndSpinChanged(double val);
+    void onClipDurSpinChanged(double val);
+
+public slots:
+    // Keyframe Animation slots
+    void onToggleKeyframeTimeOfDay();
+    void onPrevKeyframeTimeOfDay();
+    void onNextKeyframeTimeOfDay();
+    void onInterpKeyframeTimeOfDay(KeyframeInterpolation interp);
+
+    void onToggleKeyframeOpacity();
+    void onPrevKeyframeOpacity();
+    void onNextKeyframeOpacity();
+    void onInterpKeyframeOpacity(KeyframeInterpolation interp);
+
+    void onToggleKeyframeScale();
+    void onPrevKeyframeScale();
+    void onNextKeyframeScale();
+    void onInterpKeyframeScale(KeyframeInterpolation interp);
+
+    void onToggleKeyframeRotation();
+    void onPrevKeyframeRotation();
+    void onNextKeyframeRotation();
+    void onInterpKeyframeRotation(KeyframeInterpolation interp);
+
+    void onToggleKeyframePosition();
+    void onPrevKeyframePosition();
+    void onNextKeyframePosition();
+    void onInterpKeyframePosition(KeyframeInterpolation interp);
+
+    void onToggleKeyframeVolume();
+    void onPrevKeyframeVolume();
+    void onNextKeyframeVolume();
+    void onInterpKeyframeVolume(KeyframeInterpolation interp);
+
 private:
     void refreshUi();
 
@@ -208,6 +305,9 @@ private:
     QLabel *m_clipTypeBadge = nullptr;
     QLabel *m_trackLabel = nullptr;
     QLabel *m_timingLabel = nullptr;
+    QDoubleSpinBox *m_clipStartSpin = nullptr;
+    QDoubleSpinBox *m_clipEndSpin = nullptr;
+    QDoubleSpinBox *m_clipDurSpin = nullptr;
     QLabel *m_techDetailsLabel = nullptr;
 
     QPushButton *m_separateAudioBtn = nullptr;
@@ -348,6 +448,55 @@ private:
     QDoubleSpinBox *m_audioFadeInSpin = nullptr;
     QDoubleSpinBox *m_audioFadeOutSpin = nullptr;
     QCheckBox *m_muteAudioCheck = nullptr;
+    QCheckBox *m_volFadePreviousCheck = nullptr;
+    QDoubleSpinBox *m_volFadeDurationSpin = nullptr;
+    QWidget *m_volFadeContainer = nullptr;
+    QCheckBox *m_volMutePreviousCheck = nullptr;
+
+    void applyVolumeKeyframe(TimelineClip *clip, qint64 offset, float targetVol);
+
+    // Chroma Key controls
+    QGroupBox *m_chromaKeySection = nullptr;
+    QCheckBox *m_chromaKeyCheck = nullptr;
+    QPushButton *m_chromaColorBtn = nullptr;
+    QLabel *m_chromaColorSwatch = nullptr;
+    QSlider *m_chromaToleranceSlider = nullptr;
+    QSlider *m_chromaSmoothnessSlider = nullptr;
+    QSlider *m_chromaSpillSlider = nullptr;
+    QCheckBox *m_chromaShowMatteCheck = nullptr;
+
+    // Mask controls
+    QGroupBox *m_maskSection = nullptr;
+    QComboBox *m_maskShapeCombo = nullptr;
+    QSpinBox *m_maskCenterXSpin = nullptr;
+    QSpinBox *m_maskCenterYSpin = nullptr;
+    QSpinBox *m_maskWidthSpin = nullptr;
+    QSpinBox *m_maskHeightSpin = nullptr;
+    QSlider *m_maskFeatherSlider = nullptr;
+    QLabel *m_maskFeatherLbl = nullptr;
+    QCheckBox *m_maskInvertCheck = nullptr;
+
+    // Video Stabilization controls
+    QGroupBox *m_stabilizerSection = nullptr;
+    QCheckBox *m_stabilizerCheck = nullptr;
+    QSlider *m_stabilizerRadiusSlider = nullptr;
+    QLabel *m_stabilizerRadiusLbl = nullptr;
+    QLabel *m_stabilizerCropBadge = nullptr;
+
+    // Speed Ramp controls
+    QGroupBox *m_speedRampSection = nullptr;
+    QDoubleSpinBox *m_speedRampSpin = nullptr;
+    QSlider *m_speedRampSlider = nullptr;
+    QCheckBox *m_speedRampEaseCheck = nullptr;
+
+    // Object Tracking controls
+    QGroupBox *m_trackingSection = nullptr;
+    QPushButton *m_openTrackerBtn = nullptr;
+
+    // Plugins controls
+    QGroupBox *m_pluginsSection = nullptr;
+    QVBoxLayout *m_pluginsListLayout = nullptr;
+    QPushButton *m_addPluginBtn = nullptr;
 
     // Actions
     QPushButton *m_splitBtn = nullptr;
@@ -421,4 +570,13 @@ private:
     QLabel *m_projectTracksLabel = nullptr;
     QLabel *m_projectClipsLabel = nullptr;
     QPushButton *m_globalExportBtn = nullptr;
+
+    // Keyframe Animation System
+    qint64 m_playheadPositionMs = 0;
+    KeyframeControlBar *m_kfBarTimeOfDay = nullptr;
+    KeyframeControlBar *m_kfBarOpacity = nullptr;
+    KeyframeControlBar *m_kfBarScale = nullptr;
+    KeyframeControlBar *m_kfBarRotation = nullptr;
+    KeyframeControlBar *m_kfBarPosition = nullptr;
+    KeyframeControlBar *m_kfBarVolume = nullptr;
 };

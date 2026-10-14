@@ -349,6 +349,18 @@ void MediaLibraryWidget::updateItemDisplay(QListWidgetItem *listItem, const Medi
         badgeColor = QColor("#d29922");
         badgeText = "TXT";
         break;
+    case ClipType::Adjustment:
+        badgeColor = QColor("#bc8cff");
+        badgeText = "ADJ";
+        break;
+    case ClipType::Compound:
+        badgeColor = QColor("#3fb950");
+        badgeText = "CMP";
+        break;
+    case ClipType::SolidColor:
+        badgeColor = QColor("#56d364");
+        badgeText = "COL";
+        break;
     }
 
     p.fillRect(QRect(0, 0, 24, 12), badgeColor);

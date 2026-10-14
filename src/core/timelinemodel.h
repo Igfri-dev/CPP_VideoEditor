@@ -65,6 +65,9 @@ public:
                         qint64 timelineInMs, qint64 durationMs, bool separateAudio = false);
     qint64 addTextClip(const QString &text = "Texto de ejemplo", qint64 timelineInMs = 0,
                        qint64 durationMs = 5000, qint64 targetTrackId = -1);
+    qint64 addAdjustmentClip(qint64 timelineInMs = 0, qint64 durationMs = 5000, qint64 targetTrackId = -1);
+    qint64 addSolidColorClip(const QColor &color = QColor("#1f6feb"), qint64 timelineInMs = 0,
+                             qint64 durationMs = 5000, qint64 targetTrackId = -1);
 
     // Essential Requirement: Separar Audio / Desvincular Audio
     bool separateAudio(qint64 clipId);

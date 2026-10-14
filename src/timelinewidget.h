@@ -74,6 +74,7 @@ public slots:
     void selectAll();
     void addVideoTrack();
     void addAudioTrack();
+    void addAdjustmentTrack();
     void setIsPlaying(bool playing);
     bool isPlaying() const { return m_isPlaying; }
     void invalidateFilmstripCache(qint64 clipId = -1);
@@ -156,10 +157,11 @@ private:
     bool m_isDraggingDuration = false;
     qint64 m_activeDurationDragMs = 0;
 
-    void showClipContextMenu(qint64 clipId, const QPoint &globalPos);
+    void showClipContextMenu(qint64 clipId, const QPoint &globalPos, qint64 clickTimeMs = -1);
     void showEmptyContextMenu(qint64 trackId, qint64 timelineMs, const QPoint &globalPos);
     void showTrackContextMenu(qint64 trackId, const QPoint &globalPos);
     void showMarkerContextMenu(qint64 markerId, const QPoint &globalPos);
+    void showChangeTimingDialog(qint64 clipId);
 
     struct FilmstripCacheItem {
         int width = 0;

@@ -5,12 +5,16 @@
 #include <QImage>
 #include <QtGlobal>
 #include "motionpath.h"
+#include "keyframe.h"
 
 enum class ClipType {
     Video,
     Audio,
     Image,
-    Text
+    Text,
+    Adjustment,
+    Compound,
+    SolidColor
 };
 
 enum class VisualFilter {
@@ -46,7 +50,108 @@ struct VisualFilterInfo {
     QString category;
 };
 
+enum class MaskShape {
+    Rectangle = 0,
+    Ellipse = 1,
+    Freehand = 2
+};
+
+inline QString maskShapeToString(MaskShape shape) {
+    switch (shape) {
+    case MaskShape::Rectangle: return "Rectangle";
+    case MaskShape::Ellipse: return "Ellipse";
+    case MaskShape::Freehand: return "Freehand";
+    }
+    return "Rectangle";
+}
+
+inline MaskShape stringToMaskShape(const QString &str) {
+    if (str.compare("Ellipse", Qt::CaseInsensitive) == 0) return MaskShape::Ellipse;
+    if (str.compare("Freehand", Qt::CaseInsensitive) == 0) return MaskShape::Freehand;
+    return MaskShape::Rectangle;
+}
+
+struct ClipMask {
+    bool enabled = false;
+    MaskShape shape = MaskShape::Rectangle;
+    QRectF normalizedRect{0.2, 0.2, 0.6, 0.6}; // Normalized coords [0..1]
+    QVector<QPointF> polygonPoints;            // Normalized coords [0..1]
+    int feather = 0;                           // Feather radius in pixels [0..200]
+    double opacity = 1.0;
+    bool inverted = false;
+
+    AnimatedProperty<QPointF> animCenter{QPointF(0.5, 0.5)};
+    AnimatedProperty<int> animFeather{0};
+    AnimatedProperty<double> animOpacity{1.0};
+
+    bool isIdentity() const { return !enabled; }
+
+    bool operator==(const ClipMask &other) const {
+        return enabled == other.enabled &&
+               shape == other.shape &&
+               normalizedRect == other.normalizedRect &&
+               polygonPoints == other.polygonPoints &&
+               feather == other.feather &&
+               std::abs(opacity - other.opacity) < 1e-4 &&
+               inverted == other.inverted &&
+               animCenter == other.animCenter &&
+               animFeather == other.animFeather &&
+               animOpacity == other.animOpacity;
+    }
+    bool operator!=(const ClipMask &other) const { return !(*this == other); }
+};
+
+struct SpeedRamp {
+    bool enabled = false;
+    AnimatedProperty<double> animSpeed{1.0};
+
+    bool operator==(const SpeedRamp &other) const {
+        return enabled == other.enabled && animSpeed == other.animSpeed;
+    }
+    bool operator!=(const SpeedRamp &other) const { return !(*this == other); }
+
+    qint64 calculateSourceOffset(qint64 timelineOffsetMs, double baseSpeed = 1.0) const {
+        if (!enabled) {
+            return qRound64(timelineOffsetMs * baseSpeed);
+        }
+        if (!animSpeed.isAnimated()) {
+            return qRound64(timelineOffsetMs * animSpeed.baseValue());
+        }
+        const qint64 step = 20;
+        double accumulatedSourceMs = 0.0;
+        qint64 t = 0;
+        while (t + step <= timelineOffsetMs) {
+            double s0 = animSpeed.valueAt(t);
+            double s1 = animSpeed.valueAt(t + step);
+            accumulatedSourceMs += (s0 + s1) * 0.5 * step;
+            t += step;
+        }
+        if (t < timelineOffsetMs) {
+            qint64 rem = timelineOffsetMs - t;
+            double s0 = animSpeed.valueAt(t);
+            double s1 = animSpeed.valueAt(timelineOffsetMs);
+            accumulatedSourceMs += (s0 + s1) * 0.5 * rem;
+        }
+        return qRound64(accumulatedSourceMs);
+    }
+};
+
+struct ClipPluginEffect {
+    QString pluginId;
+    bool enabled = true;
+    QMap<QString, QVariant> parameters;
+};
+
+#include <memory>
+#include <QMap>
+#include <QVariant>
+#include "filters/chromakey.h"
+#include "engine/videostabilizer.h"
+
+class TimelineModel;
+
 QString clipTypeToString(ClipType type);
+ClipType stringToClipType(const QString &str);
 QString visualFilterToString(VisualFilter filter);
 VisualFilter stringToVisualFilter(const QString &str);
 QList<VisualFilterInfo> allVisualFilters();
@@ -214,10 +319,16 @@ public:
     void setSpeed(double speed) { m_speed = qBound(0.1, speed, 8.0); }
 
     double volume() const { return m_volume; }
-    void setVolume(double volume) { m_volume = qBound(0.0, volume, 2.0); }
+    void setVolume(double volume) {
+        m_volume = qBound(0.0, volume, 2.0);
+        m_animVolume.setBaseValue(m_volume);
+    }
 
     double opacity() const { return m_opacity; }
-    void setOpacity(double opacity) { m_opacity = qBound(0.0, opacity, 1.0); }
+    void setOpacity(double opacity) {
+        m_opacity = qBound(0.0, opacity, 1.0);
+        m_animOpacity.setBaseValue(m_opacity);
+    }
 
     qint64 fadeInMs() const { return m_fadeInMs; }
     void setFadeInMs(qint64 ms) { m_fadeInMs = qMax<qint64>(0, ms); }
@@ -303,11 +414,19 @@ public:
         m_colorAdjustments.timeOfDayShadowCoolness = qBound(-1.0f, adj.timeOfDayShadowCoolness, 1.0f);
         m_colorAdjustments.timeOfDayExposureBias = qBound(-2.0f, adj.timeOfDayExposureBias, 2.0f);
         m_colorAdjustments.timeOfDayLutStrength = qBound(0.0f, adj.timeOfDayLutStrength, 1.0f);
+
+        m_animTimeOfDay.setBaseValue(m_colorAdjustments.timeOfDay);
+        m_animTimeOfDayIntensity.setBaseValue(m_colorAdjustments.timeOfDayIntensity);
+        m_animBrightness.setBaseValue(m_colorAdjustments.brightness);
+        m_animLuminosity.setBaseValue(m_colorAdjustments.luminosity);
     }
     bool isTimeOfDayEnabled() const { return m_colorAdjustments.timeOfDayEnabled; }
     void setTimeOfDayEnabled(bool enabled) { m_colorAdjustments.timeOfDayEnabled = enabled; }
     float timeOfDay() const { return m_colorAdjustments.timeOfDay; }
-    void setTimeOfDay(float val) { m_colorAdjustments.timeOfDay = qBound(0.0f, val, 1.0f); }
+    void setTimeOfDay(float val) {
+        m_colorAdjustments.timeOfDay = qBound(0.0f, val, 1.0f);
+        m_animTimeOfDay.setBaseValue(m_colorAdjustments.timeOfDay);
+    }
     ColorGradeMode colorGradeMode() const { return m_colorAdjustments.mode; }
     void setColorGradeMode(ColorGradeMode mode) { m_colorAdjustments.mode = mode; }
     const ColorCurve& lumaCurve() const { return m_colorAdjustments.lumaCurve; }
@@ -322,16 +441,32 @@ public:
     void setBlueCurve(const ColorCurve &c) { m_colorAdjustments.blueCurve = c; }
 
     int brightness() const { return m_colorAdjustments.brightness; }
-    void setBrightness(int b) { m_colorAdjustments.brightness = qBound(-100, b, 100); }
+    void setBrightness(int b) {
+        m_colorAdjustments.brightness = qBound(-100, b, 100);
+        m_animBrightness.setBaseValue(m_colorAdjustments.brightness);
+    }
     int luminosity() const { return m_colorAdjustments.luminosity; }
-    void setLuminosity(int l) { m_colorAdjustments.luminosity = qBound(-100, l, 100); }
+    void setLuminosity(int l) {
+        m_colorAdjustments.luminosity = qBound(-100, l, 100);
+        m_animLuminosity.setBaseValue(m_colorAdjustments.luminosity);
+    }
     int redPresence() const { return m_colorAdjustments.red; }
     void setRedPresence(int r) { m_colorAdjustments.red = qBound(-100, r, 100); }
     int greenPresence() const { return m_colorAdjustments.green; }
     void setGreenPresence(int g) { m_colorAdjustments.green = qBound(-100, g, 100); }
     int bluePresence() const { return m_colorAdjustments.blue; }
     void setBluePresence(int b) { m_colorAdjustments.blue = qBound(-100, b, 100); }
-    void resetColorAdjustments() { m_colorAdjustments = ColorAdjustments(); }
+    void resetColorAdjustments() {
+        m_colorAdjustments = ColorAdjustments();
+        m_animTimeOfDay.setBaseValue(0.60f);
+        m_animTimeOfDay.clearKeyframes();
+        m_animTimeOfDayIntensity.setBaseValue(1.0f);
+        m_animTimeOfDayIntensity.clearKeyframes();
+        m_animBrightness.setBaseValue(0);
+        m_animBrightness.clearKeyframes();
+        m_animLuminosity.setBaseValue(0);
+        m_animLuminosity.clearKeyframes();
+    }
 
     qint64 linkedClipId() const { return m_linkedClipId; }
     void setLinkedClipId(qint64 linkedId) { m_linkedClipId = linkedId; }
@@ -345,22 +480,36 @@ public:
 
     // Transformation properties (Position, Scale, Rotation)
     double posX() const { return m_posX; }
-    void setPosX(double x) { m_posX = x; }
+    void setPosX(double x) {
+        m_posX = x;
+        m_animPosition.setBaseValue(QPointF(m_posX, m_posY));
+    }
 
     double posY() const { return m_posY; }
-    void setPosY(double y) { m_posY = y; }
+    void setPosY(double y) {
+        m_posY = y;
+        m_animPosition.setBaseValue(QPointF(m_posX, m_posY));
+    }
 
     double scaleX() const { return m_scaleX; }
-    void setScaleX(double sx) { m_scaleX = qBound(0.05, sx, 10.0); }
+    void setScaleX(double sx) {
+        m_scaleX = qBound(0.05, sx, 10.0);
+        m_animScaleX.setBaseValue(m_scaleX);
+    }
 
     double scaleY() const { return m_scaleY; }
-    void setScaleY(double sy) { m_scaleY = qBound(0.05, sy, 10.0); }
+    void setScaleY(double sy) {
+        m_scaleY = qBound(0.05, sy, 10.0);
+        m_animScaleY.setBaseValue(m_scaleY);
+    }
 
     double scale() const { return m_scaleX; }
     void setScale(double s) {
         double bounded = qBound(0.05, s, 10.0);
         m_scaleX = bounded;
         m_scaleY = bounded;
+        m_animScaleX.setBaseValue(bounded);
+        m_animScaleY.setBaseValue(bounded);
     }
 
     double rotation() const { return m_rotation; }
@@ -369,6 +518,7 @@ public:
         while (deg > 360.0) deg -= 360.0;
         while (deg < -360.0) deg += 360.0;
         m_rotation = deg;
+        m_animRotation.setBaseValue(deg);
     }
 
     void resetTransform() {
@@ -379,6 +529,14 @@ public:
         m_rotation = 0.0;
         m_scaleMode = ClipScaleMode::FillCrop;
         m_motionPath.clearWaypoints();
+        m_animPosition.setBaseValue(QPointF(0, 0));
+        m_animPosition.clearKeyframes();
+        m_animScaleX.setBaseValue(1.0);
+        m_animScaleX.clearKeyframes();
+        m_animScaleY.setBaseValue(1.0);
+        m_animScaleY.clearKeyframes();
+        m_animRotation.setBaseValue(0.0);
+        m_animRotation.clearKeyframes();
     }
 
     ClipScaleMode scaleMode() const { return m_scaleMode; }
@@ -389,20 +547,81 @@ public:
     void setMotionPath(const MotionPath &path) { m_motionPath = path; }
     bool hasMotionPath() const { return m_motionPath.isEnabled(); }
 
-    QPointF positionAt(qint64 timelineMs) const {
-        if (!hasMotionPath() || durationMs() <= 0) {
-            return QPointF(m_posX, m_posY);
-        }
-        return m_motionPath.evaluateAtTime(timelineMs, m_timelineInMs, durationMs());
+    // Keyframe Animation System (AnimatedProperty<T>)
+    const AnimatedProperty<float>& animTimeOfDay() const { return m_animTimeOfDay; }
+    AnimatedProperty<float>& animTimeOfDay() { return m_animTimeOfDay; }
+    void setAnimTimeOfDay(const AnimatedProperty<float> &anim) { m_animTimeOfDay = anim; }
+
+    const AnimatedProperty<float>& animTimeOfDayIntensity() const { return m_animTimeOfDayIntensity; }
+    AnimatedProperty<float>& animTimeOfDayIntensity() { return m_animTimeOfDayIntensity; }
+    void setAnimTimeOfDayIntensity(const AnimatedProperty<float> &anim) { m_animTimeOfDayIntensity = anim; }
+
+    const AnimatedProperty<int>& animBrightness() const { return m_animBrightness; }
+    AnimatedProperty<int>& animBrightness() { return m_animBrightness; }
+    void setAnimBrightness(const AnimatedProperty<int> &anim) { m_animBrightness = anim; }
+
+    const AnimatedProperty<int>& animLuminosity() const { return m_animLuminosity; }
+    AnimatedProperty<int>& animLuminosity() { return m_animLuminosity; }
+    void setAnimLuminosity(const AnimatedProperty<int> &anim) { m_animLuminosity = anim; }
+
+    const AnimatedProperty<double>& animOpacity() const { return m_animOpacity; }
+    AnimatedProperty<double>& animOpacity() { return m_animOpacity; }
+    void setAnimOpacity(const AnimatedProperty<double> &anim) { m_animOpacity = anim; }
+
+    const AnimatedProperty<double>& animVolume() const { return m_animVolume; }
+    AnimatedProperty<double>& animVolume() { return m_animVolume; }
+    void setAnimVolume(const AnimatedProperty<double> &anim) { m_animVolume = anim; }
+
+    const AnimatedProperty<double>& animScaleX() const { return m_animScaleX; }
+    AnimatedProperty<double>& animScaleX() { return m_animScaleX; }
+    void setAnimScaleX(const AnimatedProperty<double> &anim) { m_animScaleX = anim; }
+
+    const AnimatedProperty<double>& animScaleY() const { return m_animScaleY; }
+    AnimatedProperty<double>& animScaleY() { return m_animScaleY; }
+    void setAnimScaleY(const AnimatedProperty<double> &anim) { m_animScaleY = anim; }
+
+    const AnimatedProperty<double>& animScale() const { return m_animScaleX; }
+    AnimatedProperty<double>& animScale() { return m_animScaleX; }
+    void setAnimScale(const AnimatedProperty<double> &anim) { m_animScaleX = anim; m_animScaleY = anim; }
+
+    const AnimatedProperty<double>& animRotation() const { return m_animRotation; }
+    AnimatedProperty<double>& animRotation() { return m_animRotation; }
+    void setAnimRotation(const AnimatedProperty<double> &anim) { m_animRotation = anim; }
+
+    const AnimatedProperty<QPointF>& animPosition() const { return m_animPosition; }
+    AnimatedProperty<QPointF>& animPosition() { return m_animPosition; }
+    void setAnimPosition(const AnimatedProperty<QPointF> &anim) { m_animPosition = anim; }
+
+    bool hasKeyframes() const {
+        return m_animTimeOfDay.isAnimated() || m_animTimeOfDayIntensity.isAnimated() ||
+               m_animBrightness.isAnimated() || m_animLuminosity.isAnimated() ||
+               m_animOpacity.isAnimated() || m_animVolume.isAnimated() ||
+               m_animScaleX.isAnimated() || m_animScaleY.isAnimated() ||
+               m_animRotation.isAnimated() || m_animPosition.isAnimated();
     }
 
-    double posXAt(qint64 timelineMs) const {
-        return positionAt(timelineMs).x();
+    void clearAllKeyframes() {
+        m_animTimeOfDay.clearKeyframes();
+        m_animTimeOfDayIntensity.clearKeyframes();
+        m_animBrightness.clearKeyframes();
+        m_animLuminosity.clearKeyframes();
+        m_animOpacity.clearKeyframes();
+        m_animVolume.clearKeyframes();
+        m_animScaleX.clearKeyframes();
+        m_animScaleY.clearKeyframes();
+        m_animRotation.clearKeyframes();
+        m_animPosition.clearKeyframes();
     }
 
-    double posYAt(qint64 timelineMs) const {
-        return positionAt(timelineMs).y();
-    }
+    QPointF positionAt(qint64 timelineMs) const;
+    double posXAt(qint64 timelineMs) const;
+    double posYAt(qint64 timelineMs) const;
+    double scaleXAt(qint64 timelineMs) const;
+    double scaleYAt(qint64 timelineMs) const;
+    double scaleAt(qint64 timelineMs) const;
+    double rotationAt(qint64 timelineMs) const;
+    float timeOfDayAt(qint64 timelineMs) const;
+    ColorAdjustments colorAdjustmentsAt(qint64 timelineMs) const;
 
     qint64 mapTimelineToSourceMs(qint64 timelineMs) const;
 
@@ -448,6 +667,46 @@ public:
 
     QImage renderTextImage(const QSize &canvasSize = QSize(1920, 1080)) const;
 
+    // Mask System
+    const ClipMask& mask() const { return m_mask; }
+    ClipMask& mask() { return m_mask; }
+    void setMask(const ClipMask &m) { m_mask = m; }
+    bool hasMask() const { return m_mask.enabled; }
+
+    // Speed Ramp / Time Remapping System
+    const SpeedRamp& speedRamp() const { return m_speedRamp; }
+    SpeedRamp& speedRamp() { return m_speedRamp; }
+    void setSpeedRamp(const SpeedRamp &sr) { m_speedRamp = sr; }
+    bool hasSpeedRamp() const { return m_speedRamp.enabled; }
+
+    // Professional Chroma Key System
+    const ChromaKeySettings& chromaKey() const { return m_chromaKey; }
+    ChromaKeySettings& chromaKey() { return m_chromaKey; }
+    void setChromaKey(const ChromaKeySettings &ck) { m_chromaKey = ck; }
+    bool hasChromaKey() const { return m_chromaKey.enabled; }
+
+    // Video Stabilization System
+    const StabilizationSettings& stabilization() const { return m_stabilization; }
+    StabilizationSettings& stabilization() { return m_stabilization; }
+    void setStabilization(const StabilizationSettings &s) { m_stabilization = s; }
+    bool hasStabilization() const { return m_stabilization.enabled; }
+
+    // Compound / Nested Timeline Clip
+    std::shared_ptr<TimelineModel> subTimeline() const { return m_subTimeline; }
+    void setSubTimeline(std::shared_ptr<TimelineModel> subTl) { m_subTimeline = subTl; }
+
+    // Plugin Effects Architecture
+    const QVector<ClipPluginEffect>& pluginEffects() const { return m_pluginEffects; }
+    QVector<ClipPluginEffect>& pluginEffects() { return m_pluginEffects; }
+    void addPluginEffect(const ClipPluginEffect &effect) { m_pluginEffects.append(effect); }
+    void removePluginEffectAt(int index) {
+        if (index >= 0 && index < m_pluginEffects.size()) {
+            m_pluginEffects.removeAt(index);
+        }
+    }
+    void clearPluginEffects() { m_pluginEffects.clear(); }
+    bool hasPluginEffects() const { return !m_pluginEffects.isEmpty(); }
+
 private:
     qint64 m_id = 0;
     qint64 m_trackId = 0;
@@ -474,6 +733,14 @@ private:
     bool m_isAudioMuted = false;
     ColorAdjustments m_colorAdjustments;
 
+    // Feature extensions
+    ClipMask m_mask;
+    SpeedRamp m_speedRamp;
+    ChromaKeySettings m_chromaKey;
+    StabilizationSettings m_stabilization;
+    std::shared_ptr<TimelineModel> m_subTimeline;
+    QVector<ClipPluginEffect> m_pluginEffects;
+
     // Transforms
     double m_posX = 0.0;
     double m_posY = 0.0;
@@ -496,4 +763,16 @@ private:
     int m_textAlignment = 0x0004 | 0x0080; // Qt::AlignHCenter | Qt::AlignVCenter
     int m_textBoxWidth = 0;
     int m_textBoxHeight = 0;
+
+    // Animated Properties
+    AnimatedProperty<float> m_animTimeOfDay{0.60f};
+    AnimatedProperty<float> m_animTimeOfDayIntensity{1.0f};
+    AnimatedProperty<int> m_animBrightness{0};
+    AnimatedProperty<int> m_animLuminosity{0};
+    AnimatedProperty<double> m_animOpacity{1.0};
+    AnimatedProperty<double> m_animVolume{1.0};
+    AnimatedProperty<double> m_animScaleX{1.0};
+    AnimatedProperty<double> m_animScaleY{1.0};
+    AnimatedProperty<double> m_animRotation{0.0};
+    AnimatedProperty<QPointF> m_animPosition{QPointF(0, 0)};
 };

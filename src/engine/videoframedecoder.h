@@ -4,13 +4,14 @@
 #include <QImage>
 #include <QMap>
 #include <QCache>
-#include <QMutex>
+#include <QRecursiveMutex>
 
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/hwcontext.h>
 }
 
 class VideoFrameDecoder {
@@ -21,6 +22,11 @@ public:
     QSize getVideoDimensions(const QString &filePath);
     void clearCache();
 
+    // Configurable RAM Cache bounds
+    void setMaxCacheSizeMb(int mb);
+    int maxCacheSizeMb() const;
+    int currentCacheSizeMb() const;
+
 private:
     VideoFrameDecoder();
     ~VideoFrameDecoder();
@@ -28,6 +34,8 @@ private:
     struct DecoderContext {
         AVFormatContext *fmtCtx = nullptr;
         AVCodecContext *codecCtx = nullptr;
+        AVBufferRef *hwDeviceCtx = nullptr;
+        AVPixelFormat hwPixelFormat = AV_PIX_FMT_NONE;
         int videoStreamIdx = -1;
         AVRational timeBase = {1, 1000};
         double fps = 30.0;
@@ -40,13 +48,14 @@ private:
         SwsContext *swsCtx = nullptr;
     };
 
-    DecoderContext* getOrCreateContext(const QString &filePath, bool isThumbnail = false);
+    DecoderContext* getOrCreateContext(const QString &filePath, const QSize &targetSize = QSize());
     void closeContext(DecoderContext *ctx);
 
-    QMutex m_mutex;
+    mutable QRecursiveMutex m_mutex;
     QMap<QString, DecoderContext*> m_contexts;
     QMap<QString, DecoderContext*> m_thumbContexts;
     QCache<QString, QImage> m_frameCache;
     QMap<QString, QImage> m_imageCache;
     QMap<QString, QSize> m_dimensionsCache;
+    int m_maxCacheMb = 1024;
 };

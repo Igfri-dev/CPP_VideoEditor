@@ -4,12 +4,20 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSlider>
+#include <QComboBox>
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QPainter>
 #include <QLinearGradient>
+#include <QOpenGLWidget>
+#include <QOpenGLFunctions>
+#include <QOpenGLShaderProgram>
+#include <QOpenGLTexture>
+#include <QOpenGLBuffer>
+#include <QOpenGLVertexArrayObject>
 #include "core/timelinemodel.h"
 #include "engine/audioengine.h"
+#include "engine/gpuaccelerationmanager.h"
 #include "snapping/canvassnappingengine.h"
 
 class AudioMeterWidget : public QWidget {
@@ -107,10 +115,11 @@ private:
     QTimer m_decayTimer;
 };
 
-class MonitorWidget : public QWidget {
+class MonitorWidget : public QOpenGLWidget, protected QOpenGLFunctions {
     Q_OBJECT
 public:
     explicit MonitorWidget(TimelineModel *model, QWidget *parent = nullptr);
+    ~MonitorWidget() override;
 
     void setFrame(const QImage &frame);
     void setSelectedClipId(qint64 clipId);
@@ -126,17 +135,24 @@ public:
     void setIsPlaying(bool playing);
     bool isPlaying() const { return m_isPlaying; }
 
+    bool isAutoKeyframe() const { return m_autoKeyframe; }
+    void setAutoKeyframe(bool enabled) { m_autoKeyframe = enabled; update(); }
+
 signals:
     void clipTransformChanged(qint64 clipId);
     void clipSelected(qint64 clipId);
     void filesDropped(const QStringList &filePaths);
 
 protected:
-    void paintEvent(QPaintEvent *event) override;
+    void initializeGL() override;
+    void resizeGL(int w, int h) override;
+    void paintGL() override;
+
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
+    void contextMenuEvent(QContextMenuEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dragMoveEvent(QDragMoveEvent *event) override;
     void dropEvent(QDropEvent *event) override;
@@ -152,6 +168,7 @@ private:
         ResizeLeft,
         ResizeRight,
         Rotate,
+        ToggleKeyframe,
         DragMotionPoint,
         DragMotionHandleIn,
         DragMotionHandleOut
@@ -168,6 +185,7 @@ private:
         QPointF pML;
         QPointF pMR;
         QPointF pRot;
+        QRectF kfBadgeRect;
         double scaleScreenX = 1.0;
         double scaleScreenY = 1.0;
         bool isTextClip = false;
@@ -178,6 +196,8 @@ private:
     GizmoAction hitTest(const QPointF &pos, const GizmoGeometry &geom) const;
     QPointF canvasToScreen(const QPointF &canvasOffset, const QRect &dRect) const;
     QPointF screenToCanvas(const QPointF &screenPoint, const QRect &dRect) const;
+
+    bool renderGpuFrame(const QRect &dRect, const ColorAdjustments &adj);
 
     TimelineModel *m_model = nullptr;
     QImage m_currentFrame;
@@ -213,6 +233,15 @@ private:
     qint64 m_cachedGhostClipId = -1;
     qint64 m_cachedGhostSourceInMs = -1;
     QImage m_cachedGhostImg;
+    bool m_autoKeyframe = false;
+
+    // OpenGL hardware shader rendering
+    QOpenGLShaderProgram *m_shaderProgram = nullptr;
+    QOpenGLTexture *m_videoTexture = nullptr;
+    QOpenGLTexture *m_lutTexture3D = nullptr;
+    QOpenGLVertexArrayObject m_vao;
+    QOpenGLBuffer m_vbo;
+    bool m_glInitialized = false;
 };
 
 class PreviewWidget : public QWidget {
@@ -236,6 +265,9 @@ public:
     void setShowSafeAreas(bool show) { m_monitorWidget->setShowSafeAreas(show); }
     bool showSafeAreas() const { return m_monitorWidget->showSafeAreas(); }
 
+    bool isAutoKeyframe() const { return m_monitorWidget ? m_monitorWidget->isAutoKeyframe() : false; }
+    void setAutoKeyframe(bool enabled) { if (m_monitorWidget) m_monitorWidget->setAutoKeyframe(enabled); }
+
 public slots:
     void play();
     void pause();
@@ -246,12 +278,15 @@ public slots:
     void jumpToEnd();
     void setMasterVolume(int volumePercent);
     void onAudioPositionAdvanced(qint64 positionMs);
+    void onResolutionComboChanged(int index);
+    void openPerformanceDialog();
 
 signals:
     void playheadMoved(qint64 positionMs);
     void playbackStateChanged(bool isPlaying);
     void clipSelected(qint64 clipId);
     void clipTransformChanged(qint64 clipId);
+    void frameRendered(const QImage &frame);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
@@ -275,6 +310,7 @@ private:
     QTimer m_videoTimer;
     QElapsedTimer m_playbackClock;
     qint64 m_playbackStartMs = 0;
+    bool m_updatePreviewPending = false;
 
     MonitorWidget *m_monitorWidget = nullptr;
     QLabel *m_timecodeLabel = nullptr;
@@ -285,6 +321,9 @@ private:
     QPushButton *m_stepForwardBtn = nullptr;
     QPushButton *m_jumpEndBtn = nullptr;
     QPushButton *m_loopBtn = nullptr;
+    QPushButton *m_autoKeyframeBtn = nullptr;
+    QComboBox *m_resolutionCombo = nullptr;
+    QPushButton *m_perfSettingsBtn = nullptr;
     QSlider *m_volumeSlider = nullptr;
     AudioMeterWidget *m_audioMeter = nullptr;
 };

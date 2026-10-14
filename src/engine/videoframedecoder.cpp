@@ -1,4 +1,5 @@
 #include "videoframedecoder.h"
+#include "gpuaccelerationmanager.h"
 #include "../medialibrary/mediaitem.h"
 #include <QFileInfo>
 #include <QImageReader>
@@ -14,12 +15,32 @@ VideoFrameDecoder& VideoFrameDecoder::instance()
 
 VideoFrameDecoder::VideoFrameDecoder()
 {
-    m_frameCache.setMaxCost(300); // Store up to ~300 frames in memory for smooth scrubbing & playback
+    m_maxCacheMb = 1024; // Default to 1024 MB configurable RAM limit
+    m_frameCache.setMaxCost(m_maxCacheMb);
 }
 
 VideoFrameDecoder::~VideoFrameDecoder()
 {
     clearCache();
+}
+
+void VideoFrameDecoder::setMaxCacheSizeMb(int mb)
+{
+    QMutexLocker locker(&m_mutex);
+    m_maxCacheMb = qMax(64, mb);
+    m_frameCache.setMaxCost(m_maxCacheMb);
+}
+
+int VideoFrameDecoder::maxCacheSizeMb() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_maxCacheMb;
+}
+
+int VideoFrameDecoder::currentCacheSizeMb() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_frameCache.totalCost();
 }
 
 void VideoFrameDecoder::clearCache()
@@ -45,6 +66,10 @@ void VideoFrameDecoder::closeContext(DecoderContext *ctx)
         sws_freeContext(ctx->swsCtx);
         ctx->swsCtx = nullptr;
     }
+    if (ctx->hwDeviceCtx) {
+        av_buffer_unref(&ctx->hwDeviceCtx);
+        ctx->hwDeviceCtx = nullptr;
+    }
     if (ctx->codecCtx) {
         avcodec_free_context(&ctx->codecCtx);
     }
@@ -54,8 +79,9 @@ void VideoFrameDecoder::closeContext(DecoderContext *ctx)
     delete ctx;
 }
 
-VideoFrameDecoder::DecoderContext* VideoFrameDecoder::getOrCreateContext(const QString &filePath, bool isThumbnail)
+VideoFrameDecoder::DecoderContext* VideoFrameDecoder::getOrCreateContext(const QString &filePath, const QSize &targetSize)
 {
+    bool isThumbnail = (targetSize.isValid() && targetSize.width() > 0 && targetSize.width() <= 320 && targetSize.height() <= 320);
     auto &map = isThumbnail ? m_thumbContexts : m_contexts;
     if (map.contains(filePath)) {
         return map.value(filePath);
@@ -98,15 +124,9 @@ VideoFrameDecoder::DecoderContext* VideoFrameDecoder::getOrCreateContext(const Q
         return nullptr;
     }
 
-    // Enable multithreaded slice & frame decoding for high performance on 1080p / 4K
+    // Enable multithreaded slice & frame decoding for high performance
     codecCtx->thread_count = qBound(1, QThread::idealThreadCount(), 8);
     codecCtx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-
-    if (avcodec_open2(codecCtx, codec, nullptr) != 0) {
-        avcodec_free_context(&codecCtx);
-        avformat_close_input(&fmtCtx);
-        return nullptr;
-    }
 
     DecoderContext *ctx = new DecoderContext();
     ctx->fmtCtx = fmtCtx;
@@ -115,6 +135,46 @@ VideoFrameDecoder::DecoderContext* VideoFrameDecoder::getOrCreateContext(const Q
     ctx->timeBase = fmtCtx->streams[videoStreamIdx]->time_base;
     ctx->width = codecPar->width;
     ctx->height = codecPar->height;
+
+    // Hardware acceleration initialization (NVIDIA CUDA, Apple VideoToolbox, Intel QSV, AMD D3D11VA)
+    AVHWDeviceType hwType = GpuAccelerationManager::instance().activeFfmpegHwType();
+    if (hwType != AV_HWDEVICE_TYPE_NONE && GpuAccelerationManager::instance().isHwDecodingEnabled()) {
+        for (int i = 0;; i++) {
+            const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+            if (!config) break;
+            if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) &&
+                config->device_type == hwType) {
+                ctx->hwPixelFormat = config->pix_fmt;
+                break;
+            }
+        }
+
+        if (ctx->hwPixelFormat != AV_PIX_FMT_NONE) {
+            AVBufferRef *hwCtx = nullptr;
+            if (av_hwdevice_ctx_create(&hwCtx, hwType, nullptr, nullptr, 0) == 0) {
+                ctx->hwDeviceCtx = hwCtx;
+                codecCtx->hw_device_ctx = av_buffer_ref(hwCtx);
+                codecCtx->opaque = ctx;
+                codecCtx->get_format = [](AVCodecContext *c, const enum AVPixelFormat *pix_fmts) -> enum AVPixelFormat {
+                    DecoderContext *d = static_cast<DecoderContext*>(c->opaque);
+                    if (d && d->hwPixelFormat != AV_PIX_FMT_NONE) {
+                        for (const enum AVPixelFormat *p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p) {
+                            if (*p == d->hwPixelFormat) {
+                                return *p;
+                            }
+                        }
+                    }
+                    return pix_fmts[0];
+                };
+            }
+        }
+    }
+
+    if (avcodec_open2(codecCtx, codec, nullptr) != 0) {
+        closeContext(ctx);
+        return nullptr;
+    }
+
     if (fmtCtx->duration != AV_NOPTS_VALUE) {
         ctx->durationMs = (fmtCtx->duration * 1000) / AV_TIME_BASE;
     }
@@ -177,7 +237,9 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
 {
     QMutexLocker locker(&m_mutex);
 
-    // 1. If image file, return cached static image
+    bool isScaled = targetSize.isValid() && targetSize.width() > 0 && targetSize.height() > 0;
+
+    // 1. If image file, return cached static image (scaled if targetSize specified)
     if (MediaItem::detectType(filePath) == ClipType::Image) {
         if (!m_imageCache.contains(filePath)) {
             QImage img(filePath);
@@ -192,13 +254,6 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
                                 if (avcodec_receive_frame(ctx->codecCtx, frame) == 0) {
                                     int outW = frame->width;
                                     int outH = frame->height;
-                                    if (targetSize.isValid() && targetSize.width() > 0 && targetSize.height() > 0) {
-                                        if (targetSize.width() <= 320 && targetSize.height() <= 320) {
-                                            QSize s = QSize(frame->width, frame->height).scaled(targetSize, Qt::KeepAspectRatio);
-                                            outW = s.width();
-                                            outH = s.height();
-                                        }
-                                    }
                                     img = QImage(outW, outH, QImage::Format_RGB32);
                                     SwsContext *sws = sws_getContext(
                                         frame->width, frame->height, (AVPixelFormat)frame->format,
@@ -223,16 +278,27 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
             }
             m_imageCache.insert(filePath, img);
         }
-        return m_imageCache.value(filePath);
+        QImage cachedImg = m_imageCache.value(filePath);
+        if (isScaled && !cachedImg.isNull() && (targetSize.width() < cachedImg.width() || targetSize.height() < cachedImg.height())) {
+            return cachedImg.scaled(targetSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        }
+        return cachedImg;
     }
 
-    bool isThumb = (targetSize.isValid() && targetSize.width() > 0 && targetSize.width() <= 320 && targetSize.height() <= 320);
-    int tw = isThumb ? targetSize.width() : 0;
-    int th = isThumb ? targetSize.height() : 0;
-
-    DecoderContext *ctx = getOrCreateContext(filePath, isThumb);
+    DecoderContext *ctx = getOrCreateContext(filePath, targetSize);
     if (!ctx) {
         return QImage();
+    }
+
+    // Determine target dimensions for scaled decoding
+    int tw = 0;
+    int th = 0;
+    if (isScaled && ctx->width > 0 && ctx->height > 0) {
+        if (targetSize.width() < ctx->width || targetSize.height() < ctx->height) {
+            QSize s = QSize(ctx->width, ctx->height).scaled(targetSize, Qt::KeepAspectRatio);
+            tw = qMax(2, (s.width() / 2) * 2);
+            th = qMax(2, (s.height() / 2) * 2);
+        }
     }
 
     // 2. Deterministic frame index based on stream FPS
@@ -248,14 +314,20 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
 
     int64_t targetPts = static_cast<int64_t>((static_cast<double>(timestampMs) / 1000.0) / tb + 0.5);
     int64_t halfFramePts = qMax<int64_t>(1, static_cast<int64_t>((0.5 / ctx->fps) / tb + 0.5));
+    int64_t seekMarginPts = qMax<int64_t>(ctx->oneFramePts * 4, static_cast<int64_t>(0.100 / tb));
     int64_t maxForwardSkipPts = static_cast<int64_t>(1.5 / tb);
 
-    // Precise seeking decision:
-    // - Never decoded yet (lastDecodedPts < 0)
-    // - Target is earlier than current decoder position (backward scrub/jump)
-    // - Target is more than 1.5 seconds in the future (fast forward / long jump)
+    // If target is slightly behind last decoded frame (within seek margin), return lastGoodFrame
+    // to prevent costly backward seeking and keyframe re-decode on 60 FPS forward jitter
+    if (ctx->lastDecodedPts >= 0 && targetPts < ctx->lastDecodedPts && (ctx->lastDecodedPts - targetPts) <= seekMarginPts) {
+        if (!ctx->lastGoodFrame.isNull()) {
+            return ctx->lastGoodFrame;
+        }
+    }
+
+    // Precise seeking decision
     bool needSeek = (ctx->lastDecodedPts < 0 ||
-                     targetPts < (ctx->lastDecodedPts - halfFramePts) ||
+                     targetPts < (ctx->lastDecodedPts - seekMarginPts) ||
                      (targetPts - ctx->lastDecodedPts) > maxForwardSkipPts);
 
     if (needSeek) {
@@ -274,13 +346,16 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
     auto convertFrame = [&](AVFrame *f) -> QImage {
         int outW = f->width;
         int outH = f->height;
-        if (targetSize.isValid() && targetSize.width() > 0 && targetSize.height() > 0) {
-            if (isThumb) {
-                QSize thumbSize = QSize(f->width, f->height).scaled(targetSize, Qt::KeepAspectRatio);
-                outW = thumbSize.width();
-                outH = thumbSize.height();
+        if (isScaled) {
+            if (targetSize.width() < f->width || targetSize.height() < f->height) {
+                QSize s = QSize(f->width, f->height).scaled(targetSize, Qt::KeepAspectRatio);
+                outW = qMax(2, (s.width() / 2) * 2);
+                outH = qMax(2, (s.height() / 2) * 2);
             }
         }
+        if (outW <= 0) outW = 2;
+        if (outH <= 0) outH = 2;
+
         QImage img(outW, outH, QImage::Format_RGB32);
         ctx->swsCtx = sws_getCachedContext(
             ctx->swsCtx,
@@ -301,7 +376,23 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
     while (!found && loopCount++ < maxLoops) {
         int ret = avcodec_receive_frame(ctx->codecCtx, frame);
         if (ret == 0) {
-            int64_t pts = frame->pts != AV_NOPTS_VALUE ? frame->pts : frame->pkt_dts;
+            AVFrame *actualFrame = frame;
+            AVFrame *swFrame = nullptr;
+
+            // If decoded into hardware surface (VideoToolbox / CUDA / D3D11VA / QSV), transfer to system memory
+            if (ctx->hwPixelFormat != AV_PIX_FMT_NONE && frame->format == ctx->hwPixelFormat) {
+                swFrame = av_frame_alloc();
+                if (av_hwframe_transfer_data(swFrame, frame, 0) == 0) {
+                    swFrame->pts = frame->pts;
+                    swFrame->pkt_dts = frame->pkt_dts;
+                    actualFrame = swFrame;
+                } else {
+                    av_frame_free(&swFrame);
+                    swFrame = nullptr;
+                }
+            }
+
+            int64_t pts = actualFrame->pts != AV_NOPTS_VALUE ? actualFrame->pts : actualFrame->pkt_dts;
             if (pts == AV_NOPTS_VALUE) {
                 pts = ctx->lastDecodedPts >= 0 ? ctx->lastDecodedPts + ctx->oneFramePts : targetPts;
             }
@@ -312,24 +403,30 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
 
             // Acceptance check: reached target frame index or target PTS
             if (fIdx >= targetFrameIdx || pts >= targetPts - halfFramePts) {
-                result = convertFrame(frame);
+                result = convertFrame(actualFrame);
                 ctx->lastGoodFrame = result;
+                int costMb = qMax(1, static_cast<int>(result.sizeInBytes() / (1024 * 1024)));
                 QString fKey = QString("%1_f%2_%3x%4").arg(filePath).arg(fIdx).arg(tw).arg(th);
-                m_frameCache.insert(fKey, new QImage(result), 1);
+                m_frameCache.insert(fKey, new QImage(result), costMb);
                 if (fIdx != targetFrameIdx) {
-                    m_frameCache.insert(cacheKey, new QImage(result), 1);
+                    m_frameCache.insert(cacheKey, new QImage(result), costMb);
                 }
                 found = true;
-                break;
             } else {
                 // If within 2 frames of target during forward seek catchup, cache it for fast scrubbing
                 if (targetFrameIdx - fIdx <= 2) {
-                    QImage intermediate = convertFrame(frame);
+                    QImage intermediate = convertFrame(actualFrame);
                     ctx->lastGoodFrame = intermediate;
+                    int costMb = qMax(1, static_cast<int>(intermediate.sizeInBytes() / (1024 * 1024)));
                     QString fKey = QString("%1_f%2_%3x%4").arg(filePath).arg(fIdx).arg(tw).arg(th);
-                    m_frameCache.insert(fKey, new QImage(intermediate), 1);
+                    m_frameCache.insert(fKey, new QImage(intermediate), costMb);
                 }
             }
+
+            if (swFrame) {
+                av_frame_free(&swFrame);
+            }
+            if (found) break;
         } else if (ret == AVERROR(EAGAIN)) {
             // Need more packets from container
             bool packetFed = false;
@@ -346,8 +443,20 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
                 // EOF reached - flush decoder
                 avcodec_send_packet(ctx->codecCtx, nullptr);
                 if (avcodec_receive_frame(ctx->codecCtx, frame) == 0) {
-                    result = convertFrame(frame);
+                    AVFrame *actualFrame = frame;
+                    AVFrame *swFrame = nullptr;
+                    if (ctx->hwPixelFormat != AV_PIX_FMT_NONE && frame->format == ctx->hwPixelFormat) {
+                        swFrame = av_frame_alloc();
+                        if (av_hwframe_transfer_data(swFrame, frame, 0) == 0) {
+                            actualFrame = swFrame;
+                        } else {
+                            av_frame_free(&swFrame);
+                            swFrame = nullptr;
+                        }
+                    }
+                    result = convertFrame(actualFrame);
                     ctx->lastGoodFrame = result;
+                    if (swFrame) av_frame_free(&swFrame);
                     found = true;
                 }
                 break;
@@ -361,7 +470,7 @@ QImage VideoFrameDecoder::getFrame(const QString &filePath, qint64 timestampMs, 
     av_packet_free(&pkt);
     av_frame_free(&frame);
 
-    // Fallback to lastGoodFrame to prevent black flicker, but NEVER poison the cache!
+    // Fallback to lastGoodFrame to prevent black flicker
     if (result.isNull() && !ctx->lastGoodFrame.isNull()) {
         result = ctx->lastGoodFrame;
     }

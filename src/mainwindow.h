@@ -45,6 +45,16 @@ private slots:
     void updateDurationUi();
     void updateWindowTitle();
 
+    // 13 Professional Features slots
+    void onOpenScopes();
+    void onToggleProxyMode();
+    void onAddAdjustmentLayerAction();
+    void onAddSolidColorAction();
+    void onCreateCompoundClipAction();
+    void onDecomposeCompoundClipAction();
+    void onOpenAudioMixerAction();
+    void onOpenColorManagementAction();
+
 protected:
     void closeEvent(QCloseEvent *event) override;
 
@@ -63,6 +73,8 @@ private:
     InspectorWidget *m_inspectorWidget = nullptr;
     TimelineWidget *m_timelineWidget = nullptr;
 
+    class VideoScopesWindow *m_scopesWindow = nullptr;
+
     QAction *m_actSave = nullptr;
     QAction *m_actSaveAs = nullptr;
     QMenu *m_recentProjectsMenu = nullptr;
@@ -71,10 +83,28 @@ private:
     QAction *m_actJoin = nullptr;
     QAction *m_actToggleSnap = nullptr;
     QAction *m_actToggleSafeAreas = nullptr;
+
+    // 13 Pro Features Actions & Buttons
+    QAction *m_actScopes = nullptr;
+    QAction *m_actProxyMode = nullptr;
+    QAction *m_actAddAdjustmentLayer = nullptr;
+    QAction *m_actAddSolidColor = nullptr;
+    QAction *m_actCompoundClip = nullptr;
+    QAction *m_actDecomposeCompound = nullptr;
+    QAction *m_actAudioMixer = nullptr;
+    QAction *m_actColorManagement = nullptr;
+
     QPushButton *m_undoBtn = nullptr;
     QPushButton *m_redoBtn = nullptr;
     QPushButton *m_joinBtn = nullptr;
     QPushButton *m_snapBtn = nullptr;
+
+    QPushButton *m_scopesBtn = nullptr;
+    QPushButton *m_proxyBtn = nullptr;
+    QPushButton *m_adjLayerBtn = nullptr;
+    QPushButton *m_compoundBtn = nullptr;
+    QPushButton *m_audioMixerBtn = nullptr;
+    QPushButton *m_colorMgmtBtn = nullptr;
 
     QComboBox *m_aspectRatioCombo = nullptr;
     QDoubleSpinBox *m_durationSpin = nullptr;

@@ -1,8 +1,10 @@
 #include "audioengine.h"
+#include "audioeffects.h"
 #include <QMediaDevices>
 #include <QAudioDevice>
 #include <QtMath>
 #include <cmath>
+#include <vector>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -375,22 +377,29 @@ void AudioEngine::onFeedAudio()
         }
     }
 
+    // Feature 9: Process audio through AudioMixerSuite (Master EQ + Compressor + Brickwall Limiter)
+    std::vector<float> floatBuffer(samplesToMix * 2);
+    for (int i = 0; i < samplesToMix * 2; ++i) {
+        floatBuffer[i] = mixBuffer[i] / 32768.0f;
+    }
+    AudioMixerSuite::instance().processMasterBus(floatBuffer.data(), samplesToMix * 2);
+
     // Calculate peak levels for VU meter
     double maxL = 0.0;
     double maxR = 0.0;
     for (int i = 0; i < samplesToMix; ++i) {
-        double l = std::abs(mixBuffer[i * 2]) / 32768.0;
-        double r = std::abs(mixBuffer[i * 2 + 1]) / 32768.0;
+        double l = std::abs(floatBuffer[i * 2]);
+        double r = std::abs(floatBuffer[i * 2 + 1]);
         if (l > maxL) maxL = l;
         if (r > maxR) maxR = r;
     }
     emit audioLevelsChanged(qBound(0.0, maxL, 1.0), qBound(0.0, maxR, 1.0));
 
-    // Convert mixed 32-bit to 16-bit clamped PCM
+    // Convert mixed float to 16-bit clamped PCM
     QByteArray outputBytes(samplesToMix * 4, 0);
     int16_t *out16 = reinterpret_cast<int16_t*>(outputBytes.data());
     for (int i = 0; i < samplesToMix * 2; ++i) {
-        out16[i] = static_cast<int16_t>(qBound(-32767, mixBuffer[i], 32767));
+        out16[i] = static_cast<int16_t>(qBound(-32767.0f, floatBuffer[i] * 32767.0f, 32767.0f));
     }
 
     qint64 written = m_audioIo->write(outputBytes);

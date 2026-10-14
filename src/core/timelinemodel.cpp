@@ -129,15 +129,25 @@ qint64 TimelineModel::addTrack(TrackType type, const QString &name)
     qint64 id = m_nextTrackId++;
     QString trackName = name;
     if (trackName.isEmpty()) {
-        if (type == TrackType::Video) {
-            trackName = QString("V%1").arg(m_videoTracks.size() + 1);
+        if (type == TrackType::Adjustment) {
+            int adjCount = 0;
+            for (const auto &t : m_videoTracks) {
+                if (t.type() == TrackType::Adjustment) adjCount++;
+            }
+            trackName = QString("✨ Ajustes %1").arg(adjCount + 1);
+        } else if (type == TrackType::Video) {
+            int vCount = 0;
+            for (const auto &t : m_videoTracks) {
+                if (t.type() == TrackType::Video) vCount++;
+            }
+            trackName = QString("V%1").arg(vCount + 1);
         } else {
             trackName = QString("A%1").arg(m_audioTracks.size() + 1);
         }
     }
 
-    if (type == TrackType::Video) {
-        // Insert new video tracks at the top
+    if (type == TrackType::Adjustment || type == TrackType::Video) {
+        // Insert new visual tracks at the top
         m_videoTracks.prepend(TimelineTrack(id, trackName, type));
     } else {
         // Append new audio tracks at the bottom
@@ -197,14 +207,34 @@ qint64 TimelineModel::addClip(const TimelineClip &clip, qint64 targetTrackId)
         track = findTrack(targetTrackId);
     }
     if (!track || !track->canAcceptClipType(clip.type())) {
+        track = nullptr;
         if (clip.type() == ClipType::Audio) {
-            track = m_audioTracks.isEmpty() ? nullptr : &m_audioTracks.first();
+            for (auto &t : m_audioTracks) {
+                if (t.canAcceptClipType(clip.type())) {
+                    track = &t;
+                    break;
+                }
+            }
+        } else if (clip.type() == ClipType::Adjustment) {
+            for (auto &t : m_videoTracks) {
+                if (t.type() == TrackType::Adjustment) {
+                    track = &t;
+                    break;
+                }
+            }
         } else {
-            track = m_videoTracks.isEmpty() ? nullptr : &m_videoTracks.last();
+            for (auto &t : m_videoTracks) {
+                if (t.canAcceptClipType(clip.type())) {
+                    track = &t;
+                    break;
+                }
+            }
         }
     }
     if (!track) {
-        qint64 tid = addTrack(clip.type() == ClipType::Audio ? TrackType::Audio : TrackType::Video);
+        TrackType neededType = (clip.type() == ClipType::Audio) ? TrackType::Audio :
+                               (clip.type() == ClipType::Adjustment) ? TrackType::Adjustment : TrackType::Video;
+        qint64 tid = addTrack(neededType);
         track = findTrack(tid);
     }
     if (!track) return -1;
@@ -294,13 +324,21 @@ qint64 TimelineModel::addMediaClip(const QString &filePath, ClipType type, qint6
     // Audio or Image
     TimelineTrack *track = findTrack(targetTrackId);
     if (!track || !track->canAcceptClipType(type)) {
+        track = nullptr;
         if (type == ClipType::Audio) {
-            track = m_audioTracks.isEmpty() ? nullptr : &m_audioTracks.first();
-        } else if (type == ClipType::Image) {
-            // Overlay track is first in videoTracks (V2)
-            track = m_videoTracks.isEmpty() ? nullptr : &m_videoTracks.first();
+            for (auto &t : m_audioTracks) {
+                if (t.canAcceptClipType(type)) {
+                    track = &t;
+                    break;
+                }
+            }
         } else {
-            track = m_videoTracks.isEmpty() ? nullptr : &m_videoTracks.last();
+            for (auto &t : m_videoTracks) {
+                if (t.canAcceptClipType(type)) {
+                    track = &t;
+                    break;
+                }
+            }
         }
     }
     if (!track) {
@@ -331,7 +369,13 @@ qint64 TimelineModel::addTextClip(const QString &text, qint64 timelineInMs, qint
 
     TimelineTrack *track = findTrack(targetTrackId);
     if (!track || !track->canAcceptClipType(ClipType::Text)) {
-        track = m_videoTracks.isEmpty() ? nullptr : &m_videoTracks.first();
+        track = nullptr;
+        for (auto &t : m_videoTracks) {
+            if (t.canAcceptClipType(ClipType::Text)) {
+                track = &t;
+                break;
+            }
+        }
     }
     if (!track) {
         qint64 tid = addTrack(TrackType::Video, "V2 (Superposición / Texto)");
@@ -353,6 +397,93 @@ qint64 TimelineModel::addTextClip(const QString &text, qint64 timelineInMs, qint
     clip.setSourceOutMs(effectiveDur);
     clip.setSourceDurationMs(effectiveDur);
     clip.setTextContent(content);
+
+    track->addClip(clip);
+    emit clipAdded(clipId);
+    notifyChange();
+    return clipId;
+}
+
+qint64 TimelineModel::addAdjustmentClip(qint64 timelineInMs, qint64 durationMs, qint64 targetTrackId)
+{
+    saveState("Añadir capa de ajuste");
+
+    TimelineTrack *track = nullptr;
+    if (targetTrackId > 0) {
+        TimelineTrack *t = findTrack(targetTrackId);
+        if (t && t->type() == TrackType::Adjustment) {
+            track = t;
+        }
+    }
+
+    // If no target adjustment track specified or valid, search for an existing Adjustment track
+    if (!track) {
+        for (TimelineTrack &t : m_videoTracks) {
+            if (t.type() == TrackType::Adjustment) {
+                track = &t;
+                break;
+            }
+        }
+    }
+
+    // If no Adjustment track exists yet in the timeline, create a new dedicated Adjustment Track!
+    if (!track) {
+        qint64 tid = addTrack(TrackType::Adjustment, "✨ Ajustes 1");
+        track = findTrack(tid);
+    }
+    if (!track) return -1;
+
+    qint64 effectiveDur = durationMs > 0 ? durationMs : 5000;
+    qint64 startMs = track->nextAvailableTime(timelineInMs, effectiveDur);
+    qint64 clipId = m_nextClipId++;
+
+    TimelineClip clip(clipId, track->id(), "Capa de Ajuste", "", ClipType::Adjustment);
+    clip.setTimelineInMs(startMs);
+    clip.setTimelineOutMs(startMs + effectiveDur);
+    clip.setSourceInMs(0);
+    clip.setSourceOutMs(effectiveDur);
+    clip.setSourceDurationMs(effectiveDur);
+    clip.setColor(QColor("#bc8cff"));
+
+    track->addClip(clip);
+    emit clipAdded(clipId);
+    notifyChange();
+    return clipId;
+}
+
+qint64 TimelineModel::addSolidColorClip(const QColor &color, qint64 timelineInMs, qint64 durationMs, qint64 targetTrackId)
+{
+    saveState("Añadir color sólido");
+
+    TimelineTrack *track = findTrack(targetTrackId);
+    if (!track || !track->canAcceptClipType(ClipType::SolidColor)) {
+        track = nullptr;
+        for (auto &t : m_videoTracks) {
+            if (t.canAcceptClipType(ClipType::SolidColor)) {
+                track = &t;
+                break;
+            }
+        }
+    }
+    if (!track) {
+        qint64 tid = addTrack(TrackType::Video, "Video 1");
+        track = findTrack(tid);
+    }
+    if (!track) return -1;
+
+    qint64 effectiveDur = durationMs > 0 ? durationMs : 5000;
+    qint64 startMs = track->nextAvailableTime(timelineInMs, effectiveDur);
+    qint64 clipId = m_nextClipId++;
+
+    QColor c = color.isValid() ? color : QColor("#1f6feb");
+    TimelineClip clip(clipId, track->id(), QString("Color Sólido (%1)").arg(c.name()), "", ClipType::SolidColor);
+    clip.setTimelineInMs(startMs);
+    clip.setTimelineOutMs(startMs + effectiveDur);
+    clip.setSourceInMs(0);
+    clip.setSourceOutMs(effectiveDur);
+    clip.setSourceDurationMs(effectiveDur);
+    clip.setColor(c);
+    clip.setBackgroundColor(c);
 
     track->addClip(clip);
     emit clipAdded(clipId);
@@ -536,38 +667,57 @@ bool TimelineModel::trimClip(qint64 clipId, bool isLeftEdge, qint64 newTimelineM
     if (!clip) return false;
 
     const qint64 minDurationMs = 100; // minimum 100ms clip duration
+    bool isSynthetic = (clip->type() == ClipType::Adjustment || 
+                        clip->type() == ClipType::Text || 
+                        clip->type() == ClipType::SolidColor);
 
     if (isLeftEdge) {
         qint64 clampedIn = qBound<qint64>(0, newTimelineMs, clip->timelineOutMs() - minDurationMs);
-        qint64 diffTimeline = clampedIn - clip->timelineInMs();
-        qint64 diffSource = qRound64(diffTimeline * clip->speed());
-        qint64 newSourceIn = clip->sourceInMs() + diffSource;
-
-        if (newSourceIn < 0 || newSourceIn >= clip->sourceOutMs()) {
-            return false;
-        }
         if (track->hasOverlap(clampedIn, clip->timelineOutMs(), clipId)) {
             return false;
         }
 
-        clip->setTimelineInMs(clampedIn);
-        clip->setSourceInMs(newSourceIn);
+        if (isSynthetic) {
+            clip->setTimelineInMs(clampedIn);
+            clip->setSourceInMs(0);
+            clip->setSourceOutMs(clip->durationMs());
+            clip->setSourceDurationMs(clip->durationMs());
+        } else {
+            qint64 diffTimeline = clampedIn - clip->timelineInMs();
+            qint64 diffSource = qRound64(diffTimeline * clip->speed());
+            qint64 newSourceIn = clip->sourceInMs() + diffSource;
+
+            if (newSourceIn < 0 || newSourceIn >= clip->sourceOutMs()) {
+                return false;
+            }
+            clip->setTimelineInMs(clampedIn);
+            clip->setSourceInMs(newSourceIn);
+        }
     } else {
         qint64 clampedOut = qMax<qint64>(clip->timelineInMs() + minDurationMs, newTimelineMs);
-        qint64 diffTimeline = clampedOut - clip->timelineOutMs();
-        qint64 diffSource = qRound64(diffTimeline * clip->speed());
-        qint64 newSourceOut = clip->sourceOutMs() + diffSource;
-
-        if (clip->sourceDurationMs() > 0 && newSourceOut > clip->sourceDurationMs()) {
-            newSourceOut = clip->sourceDurationMs();
-            clampedOut = clip->timelineInMs() + qRound64((newSourceOut - clip->sourceInMs()) / clip->speed());
-        }
         if (track->hasOverlap(clip->timelineInMs(), clampedOut, clipId)) {
             return false;
         }
 
-        clip->setTimelineOutMs(clampedOut);
-        clip->setSourceOutMs(newSourceOut);
+        if (isSynthetic) {
+            clip->setTimelineOutMs(clampedOut);
+            clip->setSourceDurationMs(clip->durationMs());
+            clip->setSourceOutMs(clip->durationMs());
+        } else {
+            qint64 diffTimeline = clampedOut - clip->timelineOutMs();
+            qint64 diffSource = qRound64(diffTimeline * clip->speed());
+            qint64 newSourceOut = clip->sourceOutMs() + diffSource;
+
+            if (clip->sourceDurationMs() > 0 && newSourceOut > clip->sourceDurationMs()) {
+                newSourceOut = clip->sourceDurationMs();
+                clampedOut = clip->timelineInMs() + qRound64((newSourceOut - clip->sourceInMs()) / clip->speed());
+                if (track->hasOverlap(clip->timelineInMs(), clampedOut, clipId)) {
+                    return false;
+                }
+            }
+            clip->setTimelineOutMs(clampedOut);
+            clip->setSourceOutMs(newSourceOut);
+        }
     }
 
     track->sortClips();

@@ -2,6 +2,8 @@
 #include "../medialibrary/mediaitem.h"
 #include "../timelinewidget.h"
 #include "../filters/TimeOfDayFilter.h"
+#include "../plugins/pluginregistry.h"
+#include "../tracking/motiontrackingdialog.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -193,6 +195,119 @@ void EffectsListWidget::dropEvent(QDropEvent *event)
     event->acceptProposedAction();
 }
 
+// ---------------------------------------------------------------------------
+// KeyframeControlBar Implementation
+// ---------------------------------------------------------------------------
+KeyframeControlBar::KeyframeControlBar(const QString &propertyName, QWidget *parent)
+    : QWidget(parent)
+{
+    QHBoxLayout *layout = new QHBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(2);
+
+    m_prevBtn = new QPushButton("◀", this);
+    m_prevBtn->setFixedSize(18, 18);
+    m_prevBtn->setToolTip("Ir al fotograma clave anterior de " + propertyName);
+    m_prevBtn->setCursor(Qt::PointingHandCursor);
+    m_prevBtn->setStyleSheet(
+        "QPushButton { background-color: #161b22; color: #c9d1d9; border: 1px solid #30363d; border-radius: 2px; font-size: 8px; padding: 0px; }"
+        "QPushButton:hover { background-color: #21262d; color: #58a6ff; }"
+        "QPushButton:disabled { color: #484f58; background-color: #0d1117; border-color: #21262d; }"
+    );
+    connect(m_prevBtn, &QPushButton::clicked, this, &KeyframeControlBar::prevKeyframeRequested);
+    layout->addWidget(m_prevBtn);
+
+    m_toggleBtn = new QPushButton("◇", this);
+    m_toggleBtn->setFixedSize(20, 18);
+    m_toggleBtn->setToolTip("Añadir / Eliminar fotograma clave en el cabezal");
+    m_toggleBtn->setCursor(Qt::PointingHandCursor);
+    m_toggleBtn->setStyleSheet(
+        "QPushButton { background-color: #161b22; color: #8b949e; border: 1px solid #30363d; border-radius: 2px; font-size: 11px; font-weight: bold; padding: 0px; }"
+        "QPushButton:hover { background-color: #21262d; color: #ffffff; }"
+    );
+    connect(m_toggleBtn, &QPushButton::clicked, this, &KeyframeControlBar::toggleKeyframeRequested);
+    layout->addWidget(m_toggleBtn);
+
+    m_nextBtn = new QPushButton("▶", this);
+    m_nextBtn->setFixedSize(18, 18);
+    m_nextBtn->setToolTip("Ir al fotograma clave siguiente de " + propertyName);
+    m_nextBtn->setCursor(Qt::PointingHandCursor);
+    m_nextBtn->setStyleSheet(
+        "QPushButton { background-color: #161b22; color: #c9d1d9; border: 1px solid #30363d; border-radius: 2px; font-size: 8px; padding: 0px; }"
+        "QPushButton:hover { background-color: #21262d; color: #58a6ff; }"
+        "QPushButton:disabled { color: #484f58; background-color: #0d1117; border-color: #21262d; }"
+    );
+    connect(m_nextBtn, &QPushButton::clicked, this, &KeyframeControlBar::nextKeyframeRequested);
+    layout->addWidget(m_nextBtn);
+
+    // Interpolation menu
+    m_interpBtn = new QPushButton("∿", this);
+    m_interpBtn->setFixedSize(18, 18);
+    m_interpBtn->setToolTip("Curva / Interpolación (Lineal, Ease In/Out, Hold, Bézier)");
+    m_interpBtn->setCursor(Qt::PointingHandCursor);
+    m_interpBtn->setStyleSheet(
+        "QPushButton { background-color: #161b22; color: #8b949e; border: 1px solid #30363d; border-radius: 2px; font-size: 11px; font-weight: bold; padding: 0px; }"
+        "QPushButton:hover { background-color: #21262d; color: #58a6ff; }"
+        "QPushButton:disabled { color: #484f58; background-color: #0d1117; border-color: #21262d; }"
+    );
+
+    m_interpMenu = new QMenu(this);
+    m_interpMenu->setStyleSheet(
+        "QMenu { background-color: #161b22; color: #c9d1d9; border: 1px solid #30363d; padding: 4px; }"
+        "QMenu::item:selected { background-color: #1f6feb; color: white; }"
+    );
+
+    auto addInterpAction = [this](KeyframeInterpolation mode, const QString &text) {
+        QAction *act = m_interpMenu->addAction(text);
+        connect(act, &QAction::triggered, this, [this, mode]() {
+            emit interpolationSelected(mode);
+        });
+    };
+
+    addInterpAction(KeyframeInterpolation::Linear, "Lineal (Linear)");
+    addInterpAction(KeyframeInterpolation::EaseIn, "Aceleración (Ease In)");
+    addInterpAction(KeyframeInterpolation::EaseOut, "Desaceleración (Ease Out)");
+    addInterpAction(KeyframeInterpolation::EaseInOut, "Suave S (Ease In/Out)");
+    addInterpAction(KeyframeInterpolation::Hold, "Mantener (Hold)");
+    addInterpAction(KeyframeInterpolation::Bezier, "Curva Bézier");
+
+    connect(m_interpBtn, &QPushButton::clicked, this, [this]() {
+        m_interpMenu->exec(m_interpBtn->mapToGlobal(QPoint(0, m_interpBtn->height())));
+    });
+    layout->addWidget(m_interpBtn);
+}
+
+void KeyframeControlBar::updateState(bool isAnimated, bool hasKeyframeAtPlayhead, bool hasPrev, bool hasNext, KeyframeInterpolation currentInterp)
+{
+    Q_UNUSED(currentInterp);
+    m_prevBtn->setEnabled(hasPrev);
+    m_nextBtn->setEnabled(hasNext);
+    m_interpBtn->setEnabled(hasKeyframeAtPlayhead);
+
+    if (hasKeyframeAtPlayhead) {
+        m_toggleBtn->setText("◆");
+        m_toggleBtn->setStyleSheet(
+            "QPushButton { background-color: #1f6feb; color: #ffffff; border: 1px solid #58a6ff; border-radius: 2px; font-size: 11px; font-weight: bold; padding: 0px; }"
+            "QPushButton:hover { background-color: #388bfd; }"
+        );
+        m_toggleBtn->setToolTip("Eliminar fotograma clave en esta posición");
+    } else if (isAnimated) {
+        m_toggleBtn->setText("◇");
+        m_toggleBtn->setStyleSheet(
+            "QPushButton { background-color: #161b22; color: #58a6ff; border: 1px solid #388bfd; border-radius: 2px; font-size: 11px; font-weight: bold; padding: 0px; }"
+            "QPushButton:hover { background-color: #21262d; border-color: #58a6ff; }"
+        );
+        m_toggleBtn->setToolTip("Añadir fotograma clave en esta posición");
+    } else {
+        m_toggleBtn->setText("◇");
+        m_toggleBtn->setStyleSheet(
+            "QPushButton { background-color: #161b22; color: #8b949e; border: 1px solid #30363d; border-radius: 2px; font-size: 11px; padding: 0px; }"
+            "QPushButton:hover { background-color: #21262d; color: white; }"
+        );
+        m_toggleBtn->setToolTip("Activar animación y añadir fotograma clave");
+    }
+}
+
 static QWidget* createChannelRow(QWidget *parent, const QString &label, const QString &colorAccent,
                                  QSlider *&slider, QSpinBox *&spin)
 {
@@ -351,6 +466,47 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
     m_timingLabel->setStyleSheet("color: #8b949e; font-size: 11px;");
     infoLayout->addWidget(m_timingLabel);
 
+    // Interactive Time Range Controls (Inicio, Fin, Duración)
+    QGroupBox *timeBox = new QGroupBox("⏱️ Tiempo y Duración del Clip", infoGroup);
+    timeBox->setStyleSheet(
+        "QGroupBox { color: #58a6ff; font-weight: bold; font-size: 11px; border: 1px solid #30363d; border-radius: 4px; margin-top: 6px; padding-top: 8px; }"
+        "QGroupBox::title { subcontrol-origin: margin; left: 6px; padding: 0 3px; }"
+    );
+    QGridLayout *timeGrid = new QGridLayout(timeBox);
+    timeGrid->setSpacing(4);
+
+    timeGrid->addWidget(new QLabel("Inicio:", timeBox), 0, 0);
+    m_clipStartSpin = new QDoubleSpinBox(timeBox);
+    m_clipStartSpin->setRange(0.0, 99999.0);
+    m_clipStartSpin->setDecimals(2);
+    m_clipStartSpin->setSingleStep(0.1);
+    m_clipStartSpin->setSuffix(" s");
+    m_clipStartSpin->setStyleSheet("background-color: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 2px 4px; font-size: 11px;");
+    connect(m_clipStartSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &InspectorWidget::onClipStartSpinChanged);
+    timeGrid->addWidget(m_clipStartSpin, 0, 1);
+
+    timeGrid->addWidget(new QLabel("Fin:", timeBox), 0, 2);
+    m_clipEndSpin = new QDoubleSpinBox(timeBox);
+    m_clipEndSpin->setRange(0.0, 99999.0);
+    m_clipEndSpin->setDecimals(2);
+    m_clipEndSpin->setSingleStep(0.1);
+    m_clipEndSpin->setSuffix(" s");
+    m_clipEndSpin->setStyleSheet("background-color: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 2px 4px; font-size: 11px;");
+    connect(m_clipEndSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &InspectorWidget::onClipEndSpinChanged);
+    timeGrid->addWidget(m_clipEndSpin, 0, 3);
+
+    timeGrid->addWidget(new QLabel("Duración:", timeBox), 1, 0);
+    m_clipDurSpin = new QDoubleSpinBox(timeBox);
+    m_clipDurSpin->setRange(0.1, 99999.0);
+    m_clipDurSpin->setDecimals(2);
+    m_clipDurSpin->setSingleStep(0.1);
+    m_clipDurSpin->setSuffix(" s");
+    m_clipDurSpin->setStyleSheet("background-color: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 2px 4px; font-size: 11px;");
+    connect(m_clipDurSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &InspectorWidget::onClipDurSpinChanged);
+    timeGrid->addWidget(m_clipDurSpin, 1, 1, 1, 3);
+
+    infoLayout->addWidget(timeBox);
+
     m_techDetailsLabel = new QLabel(infoGroup);
     m_techDetailsLabel->setStyleSheet("color: #58a6ff; font-size: 11px; background-color: #0d1117; border: 1px solid #30363d; border-radius: 4px; padding: 6px;");
     m_techDetailsLabel->setWordWrap(true);
@@ -380,12 +536,18 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
     // Scale
     QHBoxLayout *scaleHdr = new QHBoxLayout();
     scaleHdr->addWidget(new QLabel("Escala (Zoom):", m_transformSection));
+    m_kfBarScale = new KeyframeControlBar("Escala", m_transformSection);
+    connect(m_kfBarScale, &KeyframeControlBar::toggleKeyframeRequested, this, &InspectorWidget::onToggleKeyframeScale);
+    connect(m_kfBarScale, &KeyframeControlBar::prevKeyframeRequested, this, &InspectorWidget::onPrevKeyframeScale);
+    connect(m_kfBarScale, &KeyframeControlBar::nextKeyframeRequested, this, &InspectorWidget::onNextKeyframeScale);
+    connect(m_kfBarScale, &KeyframeControlBar::interpolationSelected, this, &InspectorWidget::onInterpKeyframeScale);
+    scaleHdr->addWidget(m_kfBarScale);
+    scaleHdr->addStretch();
     m_scaleSpin = new QSpinBox(m_transformSection);
     m_scaleSpin->setRange(10, 500);
     m_scaleSpin->setValue(100);
     m_scaleSpin->setSuffix("%");
     m_scaleSpin->setStyleSheet("background-color: #0d1117; color: #c9d1d9; border: 1px solid #30363d; padding: 2px 4px;");
-    scaleHdr->addStretch();
     scaleHdr->addWidget(m_scaleSpin);
     transLayout->addLayout(scaleHdr);
 
@@ -413,7 +575,16 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
 
     // Position (X, Y)
     QHBoxLayout *posLayout = new QHBoxLayout();
-    posLayout->addWidget(new QLabel("Pos X:", m_transformSection));
+    posLayout->addWidget(new QLabel("Posición:", m_transformSection));
+    m_kfBarPosition = new KeyframeControlBar("Posición", m_transformSection);
+    connect(m_kfBarPosition, &KeyframeControlBar::toggleKeyframeRequested, this, &InspectorWidget::onToggleKeyframePosition);
+    connect(m_kfBarPosition, &KeyframeControlBar::prevKeyframeRequested, this, &InspectorWidget::onPrevKeyframePosition);
+    connect(m_kfBarPosition, &KeyframeControlBar::nextKeyframeRequested, this, &InspectorWidget::onNextKeyframePosition);
+    connect(m_kfBarPosition, &KeyframeControlBar::interpolationSelected, this, &InspectorWidget::onInterpKeyframePosition);
+    posLayout->addWidget(m_kfBarPosition);
+    posLayout->addStretch();
+
+    posLayout->addWidget(new QLabel("X:", m_transformSection));
     m_posXSpin = new QSpinBox(m_transformSection);
     m_posXSpin->setRange(-1920, 1920);
     m_posXSpin->setSingleStep(5);
@@ -422,7 +593,7 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
     m_posXSpin->setStyleSheet("background-color: #0d1117; color: #c9d1d9; border: 1px solid #30363d; padding: 2px 4px;");
     posLayout->addWidget(m_posXSpin);
 
-    posLayout->addWidget(new QLabel("Pos Y:", m_transformSection));
+    posLayout->addWidget(new QLabel("Y:", m_transformSection));
     m_posYSpin = new QSpinBox(m_transformSection);
     m_posYSpin->setRange(-1080, 1080);
     m_posYSpin->setSingleStep(5);
@@ -438,12 +609,18 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
     // Rotation
     QHBoxLayout *rotHdr = new QHBoxLayout();
     rotHdr->addWidget(new QLabel("Rotación:", m_transformSection));
+    m_kfBarRotation = new KeyframeControlBar("Rotación", m_transformSection);
+    connect(m_kfBarRotation, &KeyframeControlBar::toggleKeyframeRequested, this, &InspectorWidget::onToggleKeyframeRotation);
+    connect(m_kfBarRotation, &KeyframeControlBar::prevKeyframeRequested, this, &InspectorWidget::onPrevKeyframeRotation);
+    connect(m_kfBarRotation, &KeyframeControlBar::nextKeyframeRequested, this, &InspectorWidget::onNextKeyframeRotation);
+    connect(m_kfBarRotation, &KeyframeControlBar::interpolationSelected, this, &InspectorWidget::onInterpKeyframeRotation);
+    rotHdr->addWidget(m_kfBarRotation);
+    rotHdr->addStretch();
     m_rotSpin = new QSpinBox(m_transformSection);
     m_rotSpin->setRange(-360, 360);
     m_rotSpin->setValue(0);
     m_rotSpin->setSuffix("°");
     m_rotSpin->setStyleSheet("background-color: #0d1117; color: #c9d1d9; border: 1px solid #30363d; padding: 2px 4px;");
-    rotHdr->addStretch();
     rotHdr->addWidget(m_rotSpin);
     transLayout->addLayout(rotHdr);
 
@@ -923,8 +1100,14 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
     // Opacity
     QHBoxLayout *opLayout = new QHBoxLayout();
     opLayout->addWidget(new QLabel("Opacidad:", m_videoSection));
-    m_opacityLabel = new QLabel("100%", m_videoSection);
+    m_kfBarOpacity = new KeyframeControlBar("Opacidad", m_videoSection);
+    connect(m_kfBarOpacity, &KeyframeControlBar::toggleKeyframeRequested, this, &InspectorWidget::onToggleKeyframeOpacity);
+    connect(m_kfBarOpacity, &KeyframeControlBar::prevKeyframeRequested, this, &InspectorWidget::onPrevKeyframeOpacity);
+    connect(m_kfBarOpacity, &KeyframeControlBar::nextKeyframeRequested, this, &InspectorWidget::onNextKeyframeOpacity);
+    connect(m_kfBarOpacity, &KeyframeControlBar::interpolationSelected, this, &InspectorWidget::onInterpKeyframeOpacity);
+    opLayout->addWidget(m_kfBarOpacity);
     opLayout->addStretch();
+    m_opacityLabel = new QLabel("100%", m_videoSection);
     opLayout->addWidget(m_opacityLabel);
     videoLayout->addLayout(opLayout);
 
@@ -1126,9 +1309,19 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
     todLayout->addLayout(sourceRow);
 
     // 2. Target Time Row and Slider
+    QHBoxLayout *targetHdrRow = new QHBoxLayout();
+    targetHdrRow->setSpacing(6);
     QLabel *targetLabel = new QLabel("Hora Objetivo (Target Time):", m_clipTimeOfDayGroup);
     targetLabel->setStyleSheet("color: #8b949e; font-size: 11px; font-weight: bold;");
-    todLayout->addWidget(targetLabel);
+    targetHdrRow->addWidget(targetLabel);
+    targetHdrRow->addStretch();
+    m_kfBarTimeOfDay = new KeyframeControlBar("TimeOfDay", m_clipTimeOfDayGroup);
+    connect(m_kfBarTimeOfDay, &KeyframeControlBar::toggleKeyframeRequested, this, &InspectorWidget::onToggleKeyframeTimeOfDay);
+    connect(m_kfBarTimeOfDay, &KeyframeControlBar::prevKeyframeRequested, this, &InspectorWidget::onPrevKeyframeTimeOfDay);
+    connect(m_kfBarTimeOfDay, &KeyframeControlBar::nextKeyframeRequested, this, &InspectorWidget::onNextKeyframeTimeOfDay);
+    connect(m_kfBarTimeOfDay, &KeyframeControlBar::interpolationSelected, this, &InspectorWidget::onInterpKeyframeTimeOfDay);
+    targetHdrRow->addWidget(m_kfBarTimeOfDay);
+    todLayout->addLayout(targetHdrRow);
 
     m_clipTimeOfDaySlider = new QSlider(Qt::Horizontal, m_clipTimeOfDayGroup);
     m_clipTimeOfDaySlider->setRange(0, 100);
@@ -1463,8 +1656,14 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
 
     QHBoxLayout *volLayout = new QHBoxLayout();
     volLayout->addWidget(new QLabel("Volumen:", m_audioSection));
-    m_volumeLabel = new QLabel("100%", m_audioSection);
+    m_kfBarVolume = new KeyframeControlBar("Volumen", m_audioSection);
+    connect(m_kfBarVolume, &KeyframeControlBar::toggleKeyframeRequested, this, &InspectorWidget::onToggleKeyframeVolume);
+    connect(m_kfBarVolume, &KeyframeControlBar::prevKeyframeRequested, this, &InspectorWidget::onPrevKeyframeVolume);
+    connect(m_kfBarVolume, &KeyframeControlBar::nextKeyframeRequested, this, &InspectorWidget::onNextKeyframeVolume);
+    connect(m_kfBarVolume, &KeyframeControlBar::interpolationSelected, this, &InspectorWidget::onInterpKeyframeVolume);
+    volLayout->addWidget(m_kfBarVolume);
     volLayout->addStretch();
+    m_volumeLabel = new QLabel("100%", m_audioSection);
     volLayout->addWidget(m_volumeLabel);
     audioLayout->addLayout(volLayout);
 
@@ -1473,6 +1672,51 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
     m_volumeSlider->setValue(100);
     connect(m_volumeSlider, &QSlider::valueChanged, this, &InspectorWidget::onVolumeChanged);
     audioLayout->addWidget(m_volumeSlider);
+
+    // Fade / Mute options container
+    QWidget *volKfOptionsBox = new QWidget(m_audioSection);
+    volKfOptionsBox->setStyleSheet(
+        "QWidget { background-color: #161b22; border: 1px solid #30363d; border-radius: 4px; padding: 4px; }"
+        "QCheckBox { color: #c9d1d9; font-size: 11px; }"
+        "QCheckBox::indicator { width: 13px; height: 13px; border-radius: 2px; border: 1px solid #484f58; background: #0d1117; }"
+        "QCheckBox::indicator:checked { background: #58a6ff; border-color: #58a6ff; }"
+        "QLabel { color: #8b949e; font-size: 11px; }"
+        "QDoubleSpinBox { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; font-size: 11px; padding: 1px 4px; }"
+    );
+    QVBoxLayout *volKfOptionsLayout = new QVBoxLayout(volKfOptionsBox);
+    volKfOptionsLayout->setContentsMargins(6, 6, 6, 6);
+    volKfOptionsLayout->setSpacing(4);
+
+    m_volFadePreviousCheck = new QCheckBox("Fundir con audio anterior", volKfOptionsBox);
+    m_volFadePreviousCheck->setToolTip("Crea una curva de transición suave desde el audio previo hasta este punto");
+    volKfOptionsLayout->addWidget(m_volFadePreviousCheck);
+
+    m_volFadeContainer = new QWidget(volKfOptionsBox);
+    QHBoxLayout *fadeDurLayout = new QHBoxLayout(m_volFadeContainer);
+    fadeDurLayout->setContentsMargins(18, 0, 0, 0);
+    fadeDurLayout->setSpacing(6);
+    QLabel *fadeDurLabel = new QLabel("Duración de fundido:", m_volFadeContainer);
+    m_volFadeDurationSpin = new QDoubleSpinBox(m_volFadeContainer);
+    m_volFadeDurationSpin->setRange(0.1, 10.0);
+    m_volFadeDurationSpin->setSingleStep(0.2);
+    m_volFadeDurationSpin->setValue(1.0);
+    m_volFadeDurationSpin->setSuffix(" s");
+    m_volFadeDurationSpin->setToolTip("Tiempo en segundos que tardará la curva de audio en alcanzar el nuevo nivel");
+    fadeDurLayout->addWidget(fadeDurLabel);
+    fadeDurLayout->addWidget(m_volFadeDurationSpin);
+    fadeDurLayout->addStretch();
+    volKfOptionsLayout->addWidget(m_volFadeContainer);
+    m_volFadeContainer->setEnabled(false);
+
+    connect(m_volFadePreviousCheck, &QCheckBox::toggled, this, [this](bool checked) {
+        if (m_volFadeContainer) m_volFadeContainer->setEnabled(checked);
+    });
+
+    m_volMutePreviousCheck = new QCheckBox("Al poner 0%: Silenciar todo lo anterior", volKfOptionsBox);
+    m_volMutePreviousCheck->setToolTip("Si se fija en 0%, silencia todo hacia atrás hasta el fotograma previo o el inicio del clip");
+    volKfOptionsLayout->addWidget(m_volMutePreviousCheck);
+
+    audioLayout->addWidget(volKfOptionsBox);
 
     QHBoxLayout *audioFadesLayout = new QHBoxLayout();
     audioFadesLayout->addWidget(new QLabel("Fade In (s):", m_audioSection));
@@ -1502,28 +1746,264 @@ InspectorWidget::InspectorWidget(TimelineModel *model, QObject *parent)
 
     layout->addWidget(m_audioSection);
 
-    // Speed Section
-    QGroupBox *speedGroup = new QGroupBox("Velocidad de Reproducción", m_contentContainer);
-    speedGroup->setStyleSheet("QGroupBox { color: #58a6ff; font-weight: bold; border: 1px solid #30363d; border-radius: 4px; margin-top: 8px; padding-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }");
-    QVBoxLayout *speedLayout = new QVBoxLayout(speedGroup);
+    // 1. Speed Ramp Section (Velocity & Time Remapping)
+    m_speedRampSection = new QGroupBox("⏱️ Velocidad y Speed Ramp", m_contentContainer);
+    m_speedRampSection->setStyleSheet("QGroupBox { color: #58a6ff; font-weight: bold; border: 1px solid #30363d; border-radius: 4px; margin-top: 8px; padding-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }");
+    QVBoxLayout *speedLayout = new QVBoxLayout(m_speedRampSection);
+    speedLayout->setSpacing(6);
+
+    QHBoxLayout *speedValRow = new QHBoxLayout();
+    speedValRow->addWidget(new QLabel("Multiplicador:", m_speedRampSection));
+    m_speedRampSpin = new QDoubleSpinBox(m_speedRampSection);
+    m_speedRampSpin->setRange(0.1, 10.0);
+    m_speedRampSpin->setSingleStep(0.1);
+    m_speedRampSpin->setValue(1.0);
+    m_speedRampSpin->setSuffix("x");
+    m_speedRampSpin->setStyleSheet("background-color: #0d1117; color: #c9d1d9; border: 1px solid #30363d; padding: 2px 4px; border-radius: 3px;");
+    connect(m_speedRampSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &InspectorWidget::onSpeedRampValueChanged);
+    speedValRow->addWidget(m_speedRampSpin);
+    speedLayout->addLayout(speedValRow);
+
+    m_speedRampSlider = new QSlider(Qt::Horizontal, m_speedRampSection);
+    m_speedRampSlider->setRange(10, 400); // 0.1x to 4.0x
+    m_speedRampSlider->setValue(100);
+    connect(m_speedRampSlider, &QSlider::valueChanged, this, [this](int val) {
+        if (!m_updatingUi && m_speedRampSpin) {
+            m_speedRampSpin->setValue(val / 100.0);
+        }
+    });
+    speedLayout->addWidget(m_speedRampSlider);
 
     QHBoxLayout *speedBtnsLayout = new QHBoxLayout();
-    auto addSpeedBtn = [this, speedBtnsLayout, speedGroup](const QString &label, double speed) {
-        QPushButton *btn = new QPushButton(label, speedGroup);
-        btn->setStyleSheet("background-color: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 4px; font-size: 11px;");
+    auto addSpeedBtn = [this, speedBtnsLayout](const QString &label, double speed) {
+        QPushButton *btn = new QPushButton(label, m_speedRampSection);
+        btn->setStyleSheet("background-color: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 3px; font-size: 10px; font-weight: bold;");
         connect(btn, &QPushButton::clicked, this, [this, speed]() {
-            onSpeedPresetClicked(speed);
+            if (m_speedRampSpin) m_speedRampSpin->setValue(speed);
         });
         speedBtnsLayout->addWidget(btn);
     };
+    addSpeedBtn("0.25x", 0.25);
     addSpeedBtn("0.5x", 0.5);
-    addSpeedBtn("0.75x", 0.75);
-    addSpeedBtn("1x", 1.0);
-    addSpeedBtn("1.5x", 1.5);
-    addSpeedBtn("2x", 2.0);
+    addSpeedBtn("1.0x", 1.0);
+    addSpeedBtn("2.0x", 2.0);
+    addSpeedBtn("4.0x", 4.0);
     speedLayout->addLayout(speedBtnsLayout);
 
-    layout->addWidget(speedGroup);
+    m_speedRampEaseCheck = new QCheckBox("Curva de Aceleración Suave (Speed Ramp Ease)", m_speedRampSection);
+    connect(m_speedRampEaseCheck, &QCheckBox::toggled, this, &InspectorWidget::onSpeedRampEaseToggled);
+    speedLayout->addWidget(m_speedRampEaseCheck);
+
+    layout->addWidget(m_speedRampSection);
+
+    // 2. Chroma Key Section (Green Screen)
+    m_chromaKeySection = new QGroupBox("🟩 Chroma Key Profesional (Fondo)", m_contentContainer);
+    m_chromaKeySection->setStyleSheet("QGroupBox { color: #58a6ff; font-weight: bold; border: 1px solid #30363d; border-radius: 4px; margin-top: 8px; padding-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }");
+    QVBoxLayout *chromaLayout = new QVBoxLayout(m_chromaKeySection);
+    chromaLayout->setSpacing(6);
+
+    m_chromaKeyCheck = new QCheckBox("Habilitar Chroma Key", m_chromaKeySection);
+    m_chromaKeyCheck->setStyleSheet("color: #7ee787; font-weight: bold;");
+    connect(m_chromaKeyCheck, &QCheckBox::toggled, this, &InspectorWidget::onChromaKeyEnabledToggled);
+    chromaLayout->addWidget(m_chromaKeyCheck);
+
+    QHBoxLayout *colorRow = new QHBoxLayout();
+    colorRow->addWidget(new QLabel("Color Clave:", m_chromaKeySection));
+    m_chromaColorSwatch = new QLabel(m_chromaKeySection);
+    m_chromaColorSwatch->setFixedSize(24, 20);
+    m_chromaColorSwatch->setStyleSheet("background-color: #00ff00; border: 1px solid #ffffff; border-radius: 3px;");
+    colorRow->addWidget(m_chromaColorSwatch);
+    m_chromaColorBtn = new QPushButton("Seleccionar...", m_chromaKeySection);
+    m_chromaColorBtn->setStyleSheet("background-color: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 3px 8px; font-size: 11px;");
+    connect(m_chromaColorBtn, &QPushButton::clicked, this, &InspectorWidget::onChromaKeyColorClicked);
+    colorRow->addWidget(m_chromaColorBtn);
+    colorRow->addStretch();
+    chromaLayout->addLayout(colorRow);
+
+    // Tolerance
+    QHBoxLayout *tolRow = new QHBoxLayout();
+    tolRow->addWidget(new QLabel("Tolerancia:", m_chromaKeySection));
+    tolRow->addStretch();
+    QLabel *tolLbl = new QLabel("40%", m_chromaKeySection);
+    tolRow->addWidget(tolLbl);
+    chromaLayout->addLayout(tolRow);
+    m_chromaToleranceSlider = new QSlider(Qt::Horizontal, m_chromaKeySection);
+    m_chromaToleranceSlider->setRange(0, 100);
+    m_chromaToleranceSlider->setValue(40);
+    connect(m_chromaToleranceSlider, &QSlider::valueChanged, this, [this, tolLbl](int v) {
+        tolLbl->setText(QString("%1%").arg(v));
+        onChromaKeyToleranceChanged(v);
+    });
+    chromaLayout->addWidget(m_chromaToleranceSlider);
+
+    // Smoothness
+    QHBoxLayout *smoothRow = new QHBoxLayout();
+    smoothRow->addWidget(new QLabel("Suavizado de Bordes:", m_chromaKeySection));
+    smoothRow->addStretch();
+    QLabel *smoothLbl = new QLabel("10%", m_chromaKeySection);
+    smoothRow->addWidget(smoothLbl);
+    chromaLayout->addLayout(smoothRow);
+    m_chromaSmoothnessSlider = new QSlider(Qt::Horizontal, m_chromaKeySection);
+    m_chromaSmoothnessSlider->setRange(0, 100);
+    m_chromaSmoothnessSlider->setValue(10);
+    connect(m_chromaSmoothnessSlider, &QSlider::valueChanged, this, [this, smoothLbl](int v) {
+        smoothLbl->setText(QString("%1%").arg(v));
+        onChromaKeySmoothnessChanged(v);
+    });
+    chromaLayout->addWidget(m_chromaSmoothnessSlider);
+
+    // Spill Suppression
+    QHBoxLayout *spillRow = new QHBoxLayout();
+    spillRow->addWidget(new QLabel("Supresión de Derrame (Spill):", m_chromaKeySection));
+    spillRow->addStretch();
+    QLabel *spillLbl = new QLabel("50%", m_chromaKeySection);
+    spillRow->addWidget(spillLbl);
+    chromaLayout->addLayout(spillRow);
+    m_chromaSpillSlider = new QSlider(Qt::Horizontal, m_chromaKeySection);
+    m_chromaSpillSlider->setRange(0, 100);
+    m_chromaSpillSlider->setValue(50);
+    connect(m_chromaSpillSlider, &QSlider::valueChanged, this, [this, spillLbl](int v) {
+        spillLbl->setText(QString("%1%").arg(v));
+        onChromaKeySpillChanged(v);
+    });
+    chromaLayout->addWidget(m_chromaSpillSlider);
+
+    m_chromaShowMatteCheck = new QCheckBox("Mostrar Máscara Alfa (Matte)", m_chromaKeySection);
+    connect(m_chromaShowMatteCheck, &QCheckBox::toggled, this, &InspectorWidget::onChromaKeyShowMatteToggled);
+    chromaLayout->addWidget(m_chromaShowMatteCheck);
+
+    layout->addWidget(m_chromaKeySection);
+
+    // 3. Mask & Feather Section
+    m_maskSection = new QGroupBox("📐 Máscaras de Recorte & Calado", m_contentContainer);
+    m_maskSection->setStyleSheet("QGroupBox { color: #58a6ff; font-weight: bold; border: 1px solid #30363d; border-radius: 4px; margin-top: 8px; padding-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }");
+    QVBoxLayout *maskLayout = new QVBoxLayout(m_maskSection);
+    maskLayout->setSpacing(6);
+
+    QHBoxLayout *shapeRow = new QHBoxLayout();
+    shapeRow->addWidget(new QLabel("Forma:", m_maskSection));
+    m_maskShapeCombo = new QComboBox(m_maskSection);
+    m_maskShapeCombo->addItem("Desactivada", -1);
+    m_maskShapeCombo->addItem("Rectángulo", static_cast<int>(MaskShape::Rectangle));
+    m_maskShapeCombo->addItem("Elipse / Círculo", static_cast<int>(MaskShape::Ellipse));
+    m_maskShapeCombo->addItem("Polígono Libre", static_cast<int>(MaskShape::Freehand));
+    m_maskShapeCombo->setStyleSheet("background-color: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 2px 6px;");
+    connect(m_maskShapeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &InspectorWidget::onMaskShapeChanged);
+    shapeRow->addWidget(m_maskShapeCombo);
+    maskLayout->addLayout(shapeRow);
+
+    QHBoxLayout *maskCenterRow = new QHBoxLayout();
+    maskCenterRow->addWidget(new QLabel("Centro X:", m_maskSection));
+    m_maskCenterXSpin = new QSpinBox(m_maskSection);
+    m_maskCenterXSpin->setRange(0, 100);
+    m_maskCenterXSpin->setValue(50);
+    m_maskCenterXSpin->setSuffix("%");
+    connect(m_maskCenterXSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &InspectorWidget::onMaskCenterXChanged);
+    maskCenterRow->addWidget(m_maskCenterXSpin);
+    maskCenterRow->addWidget(new QLabel("Y:", m_maskSection));
+    m_maskCenterYSpin = new QSpinBox(m_maskSection);
+    m_maskCenterYSpin->setRange(0, 100);
+    m_maskCenterYSpin->setValue(50);
+    m_maskCenterYSpin->setSuffix("%");
+    connect(m_maskCenterYSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &InspectorWidget::onMaskCenterYChanged);
+    maskCenterRow->addWidget(m_maskCenterYSpin);
+    maskLayout->addLayout(maskCenterRow);
+
+    QHBoxLayout *maskSizeRow = new QHBoxLayout();
+    maskSizeRow->addWidget(new QLabel("Ancho:", m_maskSection));
+    m_maskWidthSpin = new QSpinBox(m_maskSection);
+    m_maskWidthSpin->setRange(5, 100);
+    m_maskWidthSpin->setValue(60);
+    m_maskWidthSpin->setSuffix("%");
+    connect(m_maskWidthSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &InspectorWidget::onMaskWidthChanged);
+    maskSizeRow->addWidget(m_maskWidthSpin);
+    maskSizeRow->addWidget(new QLabel("Alto:", m_maskSection));
+    m_maskHeightSpin = new QSpinBox(m_maskSection);
+    m_maskHeightSpin->setRange(5, 100);
+    m_maskHeightSpin->setValue(60);
+    m_maskHeightSpin->setSuffix("%");
+    connect(m_maskHeightSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &InspectorWidget::onMaskHeightChanged);
+    maskSizeRow->addWidget(m_maskHeightSpin);
+    maskLayout->addLayout(maskSizeRow);
+
+    QHBoxLayout *featherHdr = new QHBoxLayout();
+    featherHdr->addWidget(new QLabel("Calado (Feather px):", m_maskSection));
+    featherHdr->addStretch();
+    m_maskFeatherLbl = new QLabel("0 px", m_maskSection);
+    featherHdr->addWidget(m_maskFeatherLbl);
+    maskLayout->addLayout(featherHdr);
+
+    m_maskFeatherSlider = new QSlider(Qt::Horizontal, m_maskSection);
+    m_maskFeatherSlider->setRange(0, 100);
+    m_maskFeatherSlider->setValue(0);
+    connect(m_maskFeatherSlider, &QSlider::valueChanged, this, &InspectorWidget::onMaskFeatherChanged);
+    maskLayout->addWidget(m_maskFeatherSlider);
+
+    m_maskInvertCheck = new QCheckBox("Invertir Máscara (Mantener Exterior)", m_maskSection);
+    connect(m_maskInvertCheck, &QCheckBox::toggled, this, &InspectorWidget::onMaskInvertToggled);
+    maskLayout->addWidget(m_maskInvertCheck);
+
+    layout->addWidget(m_maskSection);
+
+    // 4. Video Stabilization Section
+    m_stabilizerSection = new QGroupBox("🎯 Estabilización de Video (Anti-Shake)", m_contentContainer);
+    m_stabilizerSection->setStyleSheet("QGroupBox { color: #58a6ff; font-weight: bold; border: 1px solid #30363d; border-radius: 4px; margin-top: 8px; padding-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }");
+    QVBoxLayout *stabLayout = new QVBoxLayout(m_stabilizerSection);
+    stabLayout->setSpacing(6);
+
+    m_stabilizerCheck = new QCheckBox("Habilitar Estabilización Óptica", m_stabilizerSection);
+    m_stabilizerCheck->setStyleSheet("color: #7ee787; font-weight: bold;");
+    connect(m_stabilizerCheck, &QCheckBox::toggled, this, &InspectorWidget::onStabilizationEnabledToggled);
+    stabLayout->addWidget(m_stabilizerCheck);
+
+    QHBoxLayout *radiusHdr = new QHBoxLayout();
+    radiusHdr->addWidget(new QLabel("Radio de Suavizado:", m_stabilizerSection));
+    radiusHdr->addStretch();
+    m_stabilizerRadiusLbl = new QLabel("60%", m_stabilizerSection);
+    radiusHdr->addWidget(m_stabilizerRadiusLbl);
+    stabLayout->addLayout(radiusHdr);
+
+    m_stabilizerRadiusSlider = new QSlider(Qt::Horizontal, m_stabilizerSection);
+    m_stabilizerRadiusSlider->setRange(1, 100);
+    m_stabilizerRadiusSlider->setValue(60);
+    connect(m_stabilizerRadiusSlider, &QSlider::valueChanged, this, &InspectorWidget::onStabilizationRadiusChanged);
+    stabLayout->addWidget(m_stabilizerRadiusSlider);
+
+    m_stabilizerCropBadge = new QLabel("📐 Recorte de compensación de bordes: 1.08x", m_stabilizerSection);
+    m_stabilizerCropBadge->setStyleSheet("color: #8b949e; font-size: 10px;");
+    stabLayout->addWidget(m_stabilizerCropBadge);
+
+    layout->addWidget(m_stabilizerSection);
+
+    // 5. Motion Tracking Section
+    m_trackingSection = new QGroupBox("📍 Seguimiento de Objetos (Tracker)", m_contentContainer);
+    m_trackingSection->setStyleSheet("QGroupBox { color: #58a6ff; font-weight: bold; border: 1px solid #30363d; border-radius: 4px; margin-top: 8px; padding-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }");
+    QVBoxLayout *trackingLayout = new QVBoxLayout(m_trackingSection);
+    trackingLayout->setSpacing(6);
+
+    m_openTrackerBtn = new QPushButton("🎯 Rastrear Objeto en Video...", m_trackingSection);
+    m_openTrackerBtn->setStyleSheet("background-color: #21262d; color: #58a6ff; border: 1px solid #388bfd; border-radius: 4px; padding: 6px; font-weight: bold;");
+    connect(m_openTrackerBtn, &QPushButton::clicked, this, &InspectorWidget::onOpenTrackingDialog);
+    trackingLayout->addWidget(m_openTrackerBtn);
+
+    layout->addWidget(m_trackingSection);
+
+    // 6. External Plugins Section
+    m_pluginsSection = new QGroupBox("🔌 Plugins de Video del Clip", m_contentContainer);
+    m_pluginsSection->setStyleSheet("QGroupBox { color: #58a6ff; font-weight: bold; border: 1px solid #30363d; border-radius: 4px; margin-top: 8px; padding-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }");
+    QVBoxLayout *pluginsOuterLayout = new QVBoxLayout(m_pluginsSection);
+    pluginsOuterLayout->setSpacing(6);
+
+    m_pluginsListLayout = new QVBoxLayout();
+    m_pluginsListLayout->setSpacing(4);
+    pluginsOuterLayout->addLayout(m_pluginsListLayout);
+
+    m_addPluginBtn = new QPushButton("➕ Añadir Plugin de Video...", m_pluginsSection);
+    m_addPluginBtn->setStyleSheet("background-color: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 5px; font-weight: bold;");
+    connect(m_addPluginBtn, &QPushButton::clicked, this, &InspectorWidget::onAddPluginClicked);
+    pluginsOuterLayout->addWidget(m_addPluginBtn);
+
+    layout->addWidget(m_pluginsSection);
 
     // Actions
     QGroupBox *actionsGroup = new QGroupBox("Acciones Rápidas", m_contentContainer);
@@ -2181,6 +2661,7 @@ void InspectorWidget::refreshUi()
         m_deleteBtn->setEnabled(true);
 
         m_updatingUi = false;
+        updateKeyframeUi();
         return;
     }
 
@@ -2191,6 +2672,7 @@ void InspectorWidget::refreshUi()
         m_noSelectionLabel->show();
         if (m_openGlobalFromEmptyBtn) m_openGlobalFromEmptyBtn->show();
         m_contentContainer->hide();
+        updateKeyframeUi();
         return;
     }
 
@@ -2199,14 +2681,26 @@ void InspectorWidget::refreshUi()
     m_contentContainer->show();
 
     m_clipNameLabel->setText(clip->name());
-    m_clipTypeBadge->setText(clipTypeToString(clip->type()).toUpper());
     if (clip->type() == ClipType::Video) {
+        m_clipTypeBadge->setText("VIDEO");
         m_clipTypeBadge->setStyleSheet("background-color: #2f81f7; color: white; border-radius: 3px; padding: 2px 6px; font-size: 10px; font-weight: bold;");
     } else if (clip->type() == ClipType::Audio) {
+        m_clipTypeBadge->setText("AUDIO");
         m_clipTypeBadge->setStyleSheet("background-color: #d29922; color: white; border-radius: 3px; padding: 2px 6px; font-size: 10px; font-weight: bold;");
     } else if (clip->type() == ClipType::Text) {
+        m_clipTypeBadge->setText("TEXTO");
         m_clipTypeBadge->setStyleSheet("background-color: #d29922; color: #0d1117; border-radius: 3px; padding: 2px 6px; font-size: 10px; font-weight: bold;");
+    } else if (clip->type() == ClipType::Adjustment) {
+        m_clipTypeBadge->setText("✨ CAPA DE AJUSTE");
+        m_clipTypeBadge->setStyleSheet("background-color: #a371f7; color: white; border-radius: 3px; padding: 2px 6px; font-size: 10px; font-weight: bold;");
+    } else if (clip->type() == ClipType::Compound) {
+        m_clipTypeBadge->setText("📦 CLIP COMPUESTO");
+        m_clipTypeBadge->setStyleSheet("background-color: #388bfd; color: white; border-radius: 3px; padding: 2px 6px; font-size: 10px; font-weight: bold;");
+    } else if (clip->type() == ClipType::SolidColor) {
+        m_clipTypeBadge->setText("🎨 COLOR SÓLIDO");
+        m_clipTypeBadge->setStyleSheet("background-color: #2ea043; color: white; border-radius: 3px; padding: 2px 6px; font-size: 10px; font-weight: bold;");
     } else {
+        m_clipTypeBadge->setText(clipTypeToString(clip->type()).toUpper());
         m_clipTypeBadge->setStyleSheet("background-color: #8957e5; color: white; border-radius: 3px; padding: 2px 6px; font-size: 10px; font-weight: bold;");
     }
 
@@ -2220,6 +2714,20 @@ void InspectorWidget::refreshUi()
     m_timingLabel->setText(QString("Inicio: %1.%2s • Duración: %3.%4s")
                                .arg(inSec).arg(inMsRem / 100)
                                .arg(durSec).arg(durMsRem / 100));
+
+    if (m_clipStartSpin && m_clipEndSpin && m_clipDurSpin) {
+        m_clipStartSpin->blockSignals(true);
+        m_clipStartSpin->setValue(clip->timelineInMs() / 1000.0);
+        m_clipStartSpin->blockSignals(false);
+
+        m_clipEndSpin->blockSignals(true);
+        m_clipEndSpin->setValue(clip->timelineOutMs() / 1000.0);
+        m_clipEndSpin->blockSignals(false);
+
+        m_clipDurSpin->blockSignals(true);
+        m_clipDurSpin->setValue(clip->durationMs() / 1000.0);
+        m_clipDurSpin->blockSignals(false);
+    }
 
     if (m_techDetailsLabel) {
         if (clip->type() == ClipType::Text) {
@@ -2373,11 +2881,15 @@ void InspectorWidget::refreshUi()
     }
 
     // Video Section & Effects Stack
-    if (clip->type() == ClipType::Video || clip->type() == ClipType::Image || clip->type() == ClipType::Text) {
+    if (clip->type() == ClipType::Video || clip->type() == ClipType::Image || clip->type() == ClipType::Text ||
+        clip->type() == ClipType::Adjustment || clip->type() == ClipType::Compound || clip->type() == ClipType::SolidColor) {
         m_videoSection->show();
         m_clipColorSection->show();
         m_effectsSection->show();
-        int opVal = qRound(clip->opacity() * 100);
+        const qint64 clipOffset = m_playheadPositionMs - clip->timelineInMs();
+        bool inClipRange = (clipOffset >= 0 && clipOffset <= clip->durationMs());
+        double curOpacity = (inClipRange && clip->animOpacity().isAnimated()) ? clip->opacityAt(m_playheadPositionMs) : clip->opacity();
+        int opVal = qRound(curOpacity * 100);
         m_opacitySlider->setValue(opVal);
         m_opacityLabel->setText(QString("%1%").arg(opVal));
         m_videoFadeInSpin->setValue(clip->fadeInMs() / 1000.0);
@@ -2446,11 +2958,12 @@ void InspectorWidget::refreshUi()
                 m_clipTodSourceCombo->blockSignals(false);
             }
 
+            float curTod = (inClipRange && clip->animTimeOfDay().isAnimated()) ? clip->timeOfDayAt(m_playheadPositionMs) : adj.timeOfDay;
             m_clipTimeOfDaySlider->blockSignals(true);
-            m_clipTimeOfDaySlider->setValue(qRound(adj.timeOfDay * 100.0f));
+            m_clipTimeOfDaySlider->setValue(qRound(curTod * 100.0f));
             m_clipTimeOfDaySlider->blockSignals(false);
 
-            updateTimeOfDayBadge(m_clipTimeOfDayBadge, adj.timeOfDay);
+            updateTimeOfDayBadge(m_clipTimeOfDayBadge, curTod);
 
             if (m_clipTodIntensitySlider) {
                 m_clipTodIntensitySlider->blockSignals(true);
@@ -2520,7 +3033,10 @@ void InspectorWidget::refreshUi()
     // Audio Section
     if (clip->type() == ClipType::Audio || clip->type() == ClipType::Video) {
         m_audioSection->show();
-        int volVal = qRound(clip->volume() * 100);
+        const qint64 audioOffset = m_playheadPositionMs - clip->timelineInMs();
+        bool inAudioRange = (audioOffset >= 0 && audioOffset <= clip->durationMs());
+        double curVol = (inAudioRange && clip->animVolume().isAnimated()) ? clip->volumeAt(m_playheadPositionMs) : clip->volume();
+        int volVal = qRound(curVol * 100);
         m_volumeSlider->setValue(volVal);
         m_volumeLabel->setText(QString("%1%").arg(volVal));
         m_audioFadeInSpin->setValue(clip->fadeInMs() / 1000.0);
@@ -2530,7 +3046,145 @@ void InspectorWidget::refreshUi()
         m_audioSection->hide();
     }
 
+    // Speed Ramp Section
+    if (clip->type() == ClipType::Video || clip->type() == ClipType::Audio) {
+        m_speedRampSection->show();
+        m_speedRampSpin->blockSignals(true);
+        m_speedRampSpin->setValue(clip->speed());
+        m_speedRampSpin->blockSignals(false);
+        m_speedRampSlider->blockSignals(true);
+        m_speedRampSlider->setValue(qBound(10, qRound(clip->speed() * 100), 400));
+        m_speedRampSlider->blockSignals(false);
+        m_speedRampEaseCheck->blockSignals(true);
+        m_speedRampEaseCheck->setChecked(clip->speedRamp().enabled);
+        m_speedRampEaseCheck->blockSignals(false);
+    } else {
+        m_speedRampSection->hide();
+    }
+
+    // Chroma Key Section
+    if (clip->type() == ClipType::Video || clip->type() == ClipType::Image) {
+        m_chromaKeySection->show();
+        const ChromaKeySettings &ck = clip->chromaKey();
+        m_chromaKeyCheck->blockSignals(true);
+        m_chromaKeyCheck->setChecked(ck.enabled);
+        m_chromaKeyCheck->blockSignals(false);
+        m_chromaColorSwatch->setStyleSheet(QString("background-color: %1; border: 1px solid #ffffff; border-radius: 3px;").arg(ck.keyColor.name()));
+        m_chromaToleranceSlider->blockSignals(true);
+        m_chromaToleranceSlider->setValue(qBound(0, qRound(ck.tolerance * 100.0f), 100));
+        m_chromaToleranceSlider->blockSignals(false);
+        m_chromaSmoothnessSlider->blockSignals(true);
+        m_chromaSmoothnessSlider->setValue(qBound(0, qRound(ck.smoothness * 100.0f), 100));
+        m_chromaSmoothnessSlider->blockSignals(false);
+        m_chromaSpillSlider->blockSignals(true);
+        m_chromaSpillSlider->setValue(qBound(0, qRound(ck.spillSuppression * 100.0f), 100));
+        m_chromaSpillSlider->blockSignals(false);
+        m_chromaShowMatteCheck->blockSignals(true);
+        m_chromaShowMatteCheck->setChecked(ck.showMatte);
+        m_chromaShowMatteCheck->blockSignals(false);
+    } else {
+        m_chromaKeySection->hide();
+    }
+
+    // Mask Section
+    if (clip->type() == ClipType::Video || clip->type() == ClipType::Image ||
+        clip->type() == ClipType::Text || clip->type() == ClipType::Adjustment ||
+        clip->type() == ClipType::Compound || clip->type() == ClipType::SolidColor) {
+        m_maskSection->show();
+        const ClipMask &mask = clip->mask();
+        m_maskShapeCombo->blockSignals(true);
+        int shapeIdx = mask.enabled ? m_maskShapeCombo->findData(static_cast<int>(mask.shape)) : 0;
+        m_maskShapeCombo->setCurrentIndex(shapeIdx >= 0 ? shapeIdx : 0);
+        m_maskShapeCombo->blockSignals(false);
+        m_maskCenterXSpin->blockSignals(true);
+        m_maskCenterXSpin->setValue(qBound(0, qRound((mask.normalizedRect.x() + mask.normalizedRect.width() / 2.0) * 100.0), 100));
+        m_maskCenterXSpin->blockSignals(false);
+        m_maskCenterYSpin->blockSignals(true);
+        m_maskCenterYSpin->setValue(qBound(0, qRound((mask.normalizedRect.y() + mask.normalizedRect.height() / 2.0) * 100.0), 100));
+        m_maskCenterYSpin->blockSignals(false);
+        m_maskWidthSpin->blockSignals(true);
+        m_maskWidthSpin->setValue(qBound(5, qRound(mask.normalizedRect.width() * 100.0), 100));
+        m_maskWidthSpin->blockSignals(false);
+        m_maskHeightSpin->blockSignals(true);
+        m_maskHeightSpin->setValue(qBound(5, qRound(mask.normalizedRect.height() * 100.0), 100));
+        m_maskHeightSpin->blockSignals(false);
+        m_maskFeatherSlider->blockSignals(true);
+        m_maskFeatherSlider->setValue(qBound(0, mask.feather, 100));
+        m_maskFeatherSlider->blockSignals(false);
+        m_maskFeatherLbl->setText(QString("%1 px").arg(mask.feather));
+        m_maskInvertCheck->blockSignals(true);
+        m_maskInvertCheck->setChecked(mask.inverted);
+        m_maskInvertCheck->blockSignals(false);
+    } else {
+        m_maskSection->hide();
+    }
+
+    // Video Stabilization Section
+    if (clip->type() == ClipType::Video) {
+        m_stabilizerSection->show();
+        const StabilizationSettings &stab = clip->stabilization();
+        m_stabilizerCheck->blockSignals(true);
+        m_stabilizerCheck->setChecked(stab.enabled);
+        m_stabilizerCheck->blockSignals(false);
+        m_stabilizerRadiusSlider->blockSignals(true);
+        m_stabilizerRadiusSlider->setValue(qBound(1, qRound(stab.smoothness * 100.0), 100));
+        m_stabilizerRadiusSlider->blockSignals(false);
+        m_stabilizerRadiusLbl->setText(QString("%1%").arg(qRound(stab.smoothness * 100.0)));
+    } else {
+        m_stabilizerSection->hide();
+    }
+
+    // Tracking Section
+    if (clip->type() == ClipType::Video) {
+        m_trackingSection->show();
+    } else {
+        m_trackingSection->hide();
+    }
+
+    // Plugins Section
+    if (clip->type() == ClipType::Video || clip->type() == ClipType::Adjustment || clip->type() == ClipType::Compound) {
+        m_pluginsSection->show();
+        while (QLayoutItem *item = m_pluginsListLayout->takeAt(0)) {
+            if (QWidget *w = item->widget()) {
+                w->deleteLater();
+            }
+            delete item;
+        }
+
+        const auto &plugins = clip->pluginEffects();
+        if (plugins.isEmpty()) {
+            QLabel *emptyLbl = new QLabel("Sin plugins externos aplicados", m_pluginsSection);
+            emptyLbl->setStyleSheet("color: #8b949e; font-style: italic; font-size: 11px;");
+            m_pluginsListLayout->addWidget(emptyLbl);
+        } else {
+            for (int i = 0; i < plugins.size(); ++i) {
+                const auto &fx = plugins[i];
+                QWidget *itemW = new QWidget(m_pluginsSection);
+                itemW->setStyleSheet("background-color: #161b22; border: 1px solid #30363d; border-radius: 4px; padding: 4px;");
+                QHBoxLayout *itemLay = new QHBoxLayout(itemW);
+                itemLay->setContentsMargins(4, 2, 4, 2);
+
+                QLabel *fxName = new QLabel(QString("🔌 %1").arg(fx.pluginId), itemW);
+                fxName->setStyleSheet("color: #58a6ff; font-weight: bold; font-size: 11px;");
+                itemLay->addWidget(fxName);
+                itemLay->addStretch();
+
+                QPushButton *delFxBtn = new QPushButton("✕", itemW);
+                delFxBtn->setFixedSize(18, 18);
+                delFxBtn->setStyleSheet("background-color: #21262d; color: #f85149; border: none; border-radius: 3px; font-weight: bold;");
+                connect(delFxBtn, &QPushButton::clicked, this, [this, i]() {
+                    onRemovePluginClicked(i);
+                });
+                itemLay->addWidget(delFxBtn);
+                m_pluginsListLayout->addWidget(itemW);
+            }
+        }
+    } else {
+        m_pluginsSection->hide();
+    }
+
     m_updatingUi = false;
+    updateKeyframeUi();
 }
 
 void InspectorWidget::onOpacityChanged(int value)
@@ -2547,8 +3201,86 @@ void InspectorWidget::onOpacityChanged(int value)
             }
         }
     } else if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
-        clip->setOpacity(op);
+        const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+        if (clip->animOpacity().isAnimated() && offset >= 0 && offset <= clip->durationMs()) {
+            clip->animOpacity().setKeyframe(offset, static_cast<float>(op));
+            updateKeyframeUi();
+        } else {
+            clip->setOpacity(op);
+        }
         emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::setAudioFadePrevious(bool enabled, double durationSec)
+{
+    if (m_volFadePreviousCheck) {
+        m_volFadePreviousCheck->setChecked(enabled);
+    }
+    if (m_volFadeDurationSpin) {
+        m_volFadeDurationSpin->setValue(durationSec);
+    }
+}
+
+void InspectorWidget::setAudioMutePrevious(bool enabled)
+{
+    if (m_volMutePreviousCheck) {
+        m_volMutePreviousCheck->setChecked(enabled);
+    }
+}
+
+void InspectorWidget::applyVolumeKeyframe(TimelineClip *clip, qint64 offset, float targetVol)
+{
+    if (!clip) return;
+    offset = qBound(0LL, offset, clip->durationMs());
+
+    bool mutePrev = (targetVol <= 0.001f) && m_volMutePreviousCheck && m_volMutePreviousCheck->isChecked();
+    bool fadePrev = m_volFadePreviousCheck && m_volFadePreviousCheck->isChecked();
+    double fadeSec = m_volFadeDurationSpin ? m_volFadeDurationSpin->value() : 1.0;
+    qint64 fadeMs = qMax(50LL, static_cast<qint64>(fadeSec * 1000.0));
+
+    qint64 prevTime = clip->animVolume().previousKeyframeTime(offset);
+
+    if (mutePrev) {
+        // Mute from previous keyframe (or clip start 0) up to offset
+        qint64 muteStart = (prevTime >= 0) ? prevTime : 0LL;
+        clip->animVolume().setKeyframe(muteStart, 0.0f, KeyframeInterpolation::Linear);
+        clip->animVolume().setKeyframe(offset, 0.0f, KeyframeInterpolation::Linear);
+    } else if (fadePrev && offset > 0) {
+        // Smooth transition curve entering offset
+        qint64 fadeStart = qMax(0LL, offset - fadeMs);
+        if (prevTime >= 0 && fadeStart < prevTime) {
+            fadeStart = prevTime;
+        }
+
+        float volAtStart = clip->animVolume().isAnimated()
+            ? clip->animVolume().valueAt(fadeStart)
+            : static_cast<float>(clip->volume());
+
+        if (prevTime < 0 && fadeStart > 0) {
+            clip->animVolume().setKeyframe(0, volAtStart, KeyframeInterpolation::Linear);
+        }
+
+        clip->animVolume().setKeyframe(fadeStart, volAtStart, KeyframeInterpolation::EaseInOut);
+        clip->animVolume().setKeyframe(offset, targetVol, KeyframeInterpolation::Linear);
+    } else {
+        // Default: only targetVol from offset onwards; preserve audio prior to offset!
+        if (offset > 0) {
+            float prevVol = clip->animVolume().isAnimated()
+                ? clip->animVolume().valueAt(qMax(0LL, offset - 1))
+                : static_cast<float>(clip->volume());
+
+            if (prevTime < 0) {
+                // Anchor at 0 with Hold so audio before offset is 100% (or prevVol)
+                clip->animVolume().setKeyframe(0, prevVol, KeyframeInterpolation::Hold);
+            } else if (prevTime < offset - 20) {
+                // Ensure audio up to offset - 10 retains previous volume without ramping
+                if (!clip->animVolume().hasKeyframeAt(offset, 15)) {
+                    clip->animVolume().setKeyframe(offset - 10, prevVol, KeyframeInterpolation::Hold);
+                }
+            }
+        }
+        clip->animVolume().setKeyframe(offset, targetVol, KeyframeInterpolation::Linear);
     }
 }
 
@@ -2566,7 +3298,17 @@ void InspectorWidget::onVolumeChanged(int value)
             }
         }
     } else if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
-        clip->setVolume(vol);
+        const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+        bool wantKf = clip->animVolume().isAnimated()
+                   || (m_volFadePreviousCheck && m_volFadePreviousCheck->isChecked())
+                   || (m_volMutePreviousCheck && m_volMutePreviousCheck->isChecked() && value == 0);
+
+        if (wantKf && offset >= 0 && offset <= clip->durationMs()) {
+            applyVolumeKeyframe(clip, offset, static_cast<float>(vol));
+            updateKeyframeUi();
+        } else {
+            clip->setVolume(vol);
+        }
         emit clipPropertyModified(m_selectedClipId);
     }
 }
@@ -2796,12 +3538,365 @@ void InspectorWidget::onSpeedPresetClicked(double speed)
     }
 }
 
+void InspectorWidget::onSpeedRampValueChanged(double value)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        clip->setSpeed(value);
+        qint64 newDuration = qRound64((clip->sourceOutMs() - clip->sourceInMs()) / value);
+        clip->setTimelineOutMs(clip->timelineInMs() + newDuration);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onSpeedRampEaseToggled(bool checked)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        SpeedRamp ramp = clip->speedRamp();
+        ramp.enabled = checked;
+        clip->setSpeedRamp(ramp);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onChromaKeyEnabledToggled(bool enabled)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        ChromaKeySettings ck = clip->chromaKey();
+        ck.enabled = enabled;
+        clip->setChromaKey(ck);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onChromaKeyColorClicked()
+{
+    if (m_selectedClipId <= 0 || !m_model) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+
+    QColor initial = clip->chromaKey().keyColor;
+    QColor chosen = QColorDialog::getColor(initial, this, "Seleccionar Color Clave (Chroma Key)");
+    if (chosen.isValid()) {
+        ChromaKeySettings ck = clip->chromaKey();
+        ck.keyColor = chosen;
+        clip->setChromaKey(ck);
+        m_chromaColorSwatch->setStyleSheet(QString("background-color: %1; border: 1px solid #ffffff; border-radius: 3px;").arg(chosen.name()));
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onChromaKeyToleranceChanged(int value)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        ChromaKeySettings ck = clip->chromaKey();
+        ck.tolerance = value / 100.0f;
+        clip->setChromaKey(ck);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onChromaKeySmoothnessChanged(int value)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        ChromaKeySettings ck = clip->chromaKey();
+        ck.smoothness = value / 100.0f;
+        clip->setChromaKey(ck);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onChromaKeySpillChanged(int value)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        ChromaKeySettings ck = clip->chromaKey();
+        ck.spillSuppression = value / 100.0f;
+        clip->setChromaKey(ck);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onChromaKeyShowMatteToggled(bool checked)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        ChromaKeySettings ck = clip->chromaKey();
+        ck.showMatte = checked;
+        clip->setChromaKey(ck);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onMaskShapeChanged(int index)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        ClipMask m = clip->mask();
+        int val = m_maskShapeCombo->itemData(index).toInt();
+        if (val < 0) {
+            m.enabled = false;
+        } else {
+            m.enabled = true;
+            m.shape = static_cast<MaskShape>(val);
+        }
+        clip->setMask(m);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onMaskCenterXChanged(int value)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        ClipMask m = clip->mask();
+        double w = m.normalizedRect.width();
+        double cx = value / 100.0;
+        m.normalizedRect.setX(cx - w / 2.0);
+        m.normalizedRect.setWidth(w);
+        clip->setMask(m);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onMaskCenterYChanged(int value)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        ClipMask m = clip->mask();
+        double h = m.normalizedRect.height();
+        double cy = value / 100.0;
+        m.normalizedRect.setY(cy - h / 2.0);
+        m.normalizedRect.setHeight(h);
+        clip->setMask(m);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onMaskWidthChanged(int value)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        ClipMask m = clip->mask();
+        double cx = m.normalizedRect.x() + m.normalizedRect.width() / 2.0;
+        double w = value / 100.0;
+        m.normalizedRect.setX(cx - w / 2.0);
+        m.normalizedRect.setWidth(w);
+        clip->setMask(m);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onMaskHeightChanged(int value)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        ClipMask m = clip->mask();
+        double cy = m.normalizedRect.y() + m.normalizedRect.height() / 2.0;
+        double h = value / 100.0;
+        m.normalizedRect.setY(cy - h / 2.0);
+        m.normalizedRect.setHeight(h);
+        clip->setMask(m);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onMaskFeatherChanged(int value)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    m_maskFeatherLbl->setText(QString("%1 px").arg(value));
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        ClipMask m = clip->mask();
+        m.feather = value;
+        clip->setMask(m);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onMaskInvertToggled(bool checked)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        ClipMask m = clip->mask();
+        m.inverted = checked;
+        clip->setMask(m);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onStabilizationEnabledToggled(bool enabled)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        StabilizationSettings s = clip->stabilization();
+        s.enabled = enabled;
+        clip->setStabilization(s);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onStabilizationRadiusChanged(int value)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    m_stabilizerRadiusLbl->setText(QString("%1%").arg(value));
+    if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
+        StabilizationSettings s = clip->stabilization();
+        s.smoothness = value / 100.0;
+        clip->setStabilization(s);
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onOpenTrackingDialog()
+{
+    if (m_selectedClipId <= 0 || !m_model) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+
+    MotionTrackingDialog dlg(clip, this);
+    if (dlg.exec() == QDialog::Accepted) {
+        emit clipPropertyModified(m_selectedClipId);
+        refreshUi();
+    }
+}
+
+void InspectorWidget::onAddPluginClicked()
+{
+    if (m_selectedClipId <= 0 || !m_model) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+
+    QMenu menu(this);
+    for (const auto &p : PluginRegistry::instance().videoPlugins()) {
+        QAction *act = menu.addAction(QString("🔌 %1 (%2)").arg(p->name(), p->id()));
+        connect(act, &QAction::triggered, this, [this, clip, p]() {
+            ClipPluginEffect inst;
+            inst.pluginId = p->id();
+            for (const auto &def : p->parameters()) {
+                inst.parameters[def.id] = def.defaultValue;
+            }
+            clip->addPluginEffect(inst);
+            emit clipPropertyModified(m_selectedClipId);
+            refreshUi();
+        });
+    }
+    menu.exec(m_addPluginBtn->mapToGlobal(QPoint(0, m_addPluginBtn->height())));
+}
+
+void InspectorWidget::onRemovePluginClicked(int index)
+{
+    if (m_selectedClipId <= 0 || !m_model) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    clip->removePluginEffectAt(index);
+    emit clipPropertyModified(m_selectedClipId);
+    refreshUi();
+}
+
 void InspectorWidget::onSeparateAudioClicked()
 {
     if (m_selectedClipId > 0) {
         emit separateAudioRequested(m_selectedClipId);
         refreshUi();
     }
+}
+
+void InspectorWidget::onClipStartSpinChanged(double val)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+
+    qint64 newIn = qMax<qint64>(0, qRound64(val * 1000.0));
+    qint64 dur = clip->durationMs();
+    clip->setTimelineInMs(newIn);
+    clip->setTimelineOutMs(newIn + dur);
+
+    if (TimelineTrack *t = m_model->findTrackForClip(m_selectedClipId)) {
+        t->sortClips();
+    }
+    m_model->notifyChange();
+    emit clipPropertyModified(m_selectedClipId);
+
+    if (m_clipEndSpin) {
+        m_clipEndSpin->blockSignals(true);
+        m_clipEndSpin->setValue((newIn + dur) / 1000.0);
+        m_clipEndSpin->blockSignals(false);
+    }
+    m_timingLabel->setText(QString("Inicio: %1.%2s • Duración: %3.%4s")
+                               .arg(newIn / 1000).arg((newIn % 1000) / 100)
+                               .arg(dur / 1000).arg((dur % 1000) / 100));
+}
+
+void InspectorWidget::onClipEndSpinChanged(double val)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+
+    qint64 newOut = qRound64(val * 1000.0);
+    if (newOut > clip->timelineInMs() + 50) {
+        clip->setTimelineOutMs(newOut);
+        bool isSynthetic = (clip->type() == ClipType::Adjustment || 
+                            clip->type() == ClipType::Text || 
+                            clip->type() == ClipType::SolidColor);
+        if (isSynthetic) {
+            clip->setSourceDurationMs(clip->durationMs());
+            clip->setSourceOutMs(clip->durationMs());
+        }
+        if (TimelineTrack *t = m_model->findTrackForClip(m_selectedClipId)) {
+            t->sortClips();
+        }
+        m_model->notifyChange();
+        emit clipPropertyModified(m_selectedClipId);
+
+        qint64 dur = clip->durationMs();
+        if (m_clipDurSpin) {
+            m_clipDurSpin->blockSignals(true);
+            m_clipDurSpin->setValue(dur / 1000.0);
+            m_clipDurSpin->blockSignals(false);
+        }
+        m_timingLabel->setText(QString("Inicio: %1.%2s • Duración: %3.%4s")
+                                   .arg(clip->timelineInMs() / 1000).arg((clip->timelineInMs() % 1000) / 100)
+                                   .arg(dur / 1000).arg((dur % 1000) / 100));
+    }
+}
+
+void InspectorWidget::onClipDurSpinChanged(double val)
+{
+    if (m_updatingUi || m_selectedClipId <= 0 || !m_model) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+
+    qint64 newDur = qMax<qint64>(50, qRound64(val * 1000.0));
+    qint64 newOut = clip->timelineInMs() + newDur;
+    clip->setTimelineOutMs(newOut);
+
+    bool isSynthetic = (clip->type() == ClipType::Adjustment || 
+                        clip->type() == ClipType::Text || 
+                        clip->type() == ClipType::SolidColor);
+    if (isSynthetic) {
+        clip->setSourceDurationMs(newDur);
+        clip->setSourceOutMs(newDur);
+    }
+    if (TimelineTrack *t = m_model->findTrackForClip(m_selectedClipId)) {
+        t->sortClips();
+    }
+    m_model->notifyChange();
+    emit clipPropertyModified(m_selectedClipId);
+
+    if (m_clipEndSpin) {
+        m_clipEndSpin->blockSignals(true);
+        m_clipEndSpin->setValue(newOut / 1000.0);
+        m_clipEndSpin->blockSignals(false);
+    }
+    m_timingLabel->setText(QString("Inicio: %1.%2s • Duración: %3.%4s")
+                               .arg(clip->timelineInMs() / 1000).arg((clip->timelineInMs() % 1000) / 100)
+                               .arg(newDur / 1000).arg((newDur % 1000) / 100));
 }
 
 void InspectorWidget::updateTransformValues()
@@ -2813,14 +3908,20 @@ void InspectorWidget::updateTransformValues()
     bool prevUpdating = m_updatingUi;
     m_updatingUi = true;
 
-    int scalePercent = qRound(clip->scale() * 100.0);
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    bool inClip = (offset >= 0 && offset <= clip->durationMs());
+
+    double curScale = (inClip && clip->animScaleX().isAnimated()) ? clip->scaleAt(m_playheadPositionMs) : clip->scale();
+    int scalePercent = qRound(curScale * 100.0);
     m_scaleSpin->setValue(scalePercent);
     m_scaleSlider->setValue(qBound(10, scalePercent, 300));
 
-    m_posXSpin->setValue(qRound(clip->posX()));
-    m_posYSpin->setValue(qRound(clip->posY()));
+    QPointF curPos = (inClip && clip->animPosition().isAnimated()) ? clip->positionAt(m_playheadPositionMs) : QPointF(clip->posX(), clip->posY());
+    m_posXSpin->setValue(qRound(curPos.x()));
+    m_posYSpin->setValue(qRound(curPos.y()));
 
-    int rotDeg = qRound(clip->rotation());
+    double curRot = (inClip && clip->animRotation().isAnimated()) ? clip->rotationAt(m_playheadPositionMs) : clip->rotation();
+    int rotDeg = qRound(curRot);
     m_rotSpin->setValue(rotDeg);
     m_rotSlider->setValue(qBound(-180, rotDeg, 180));
 
@@ -2847,6 +3948,7 @@ void InspectorWidget::updateTransformValues()
         if (idx >= 0) m_scaleModeCombo->setCurrentIndex(idx);
     }
 
+    updateKeyframeUi();
     m_updatingUi = prevUpdating;
 }
 
@@ -2854,7 +3956,15 @@ void InspectorWidget::onScaleChanged(int value)
 {
     if (m_updatingUi) return;
     if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
-        clip->setScale(value / 100.0);
+        double newScale = value / 100.0;
+        const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+        if (clip->animScaleX().isAnimated() && offset >= 0 && offset <= clip->durationMs()) {
+            clip->animScaleX().setKeyframe(offset, newScale);
+            clip->animScaleY().setKeyframe(offset, newScale);
+            updateKeyframeUi();
+        } else {
+            clip->setScale(newScale);
+        }
         emit clipPropertyModified(m_selectedClipId);
     }
 }
@@ -2863,7 +3973,14 @@ void InspectorWidget::onPosXChanged(int value)
 {
     if (m_updatingUi) return;
     if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
-        clip->setPosX(value);
+        const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+        if (clip->animPosition().isAnimated() && offset >= 0 && offset <= clip->durationMs()) {
+            QPointF cur = clip->positionAt(m_playheadPositionMs);
+            clip->animPosition().setKeyframe(offset, QPointF(value, cur.y()));
+            updateKeyframeUi();
+        } else {
+            clip->setPosX(value);
+        }
         emit clipPropertyModified(m_selectedClipId);
     }
 }
@@ -2872,7 +3989,14 @@ void InspectorWidget::onPosYChanged(int value)
 {
     if (m_updatingUi) return;
     if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
-        clip->setPosY(value);
+        const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+        if (clip->animPosition().isAnimated() && offset >= 0 && offset <= clip->durationMs()) {
+            QPointF cur = clip->positionAt(m_playheadPositionMs);
+            clip->animPosition().setKeyframe(offset, QPointF(cur.x(), value));
+            updateKeyframeUi();
+        } else {
+            clip->setPosY(value);
+        }
         emit clipPropertyModified(m_selectedClipId);
     }
 }
@@ -2881,7 +4005,13 @@ void InspectorWidget::onRotationChanged(int value)
 {
     if (m_updatingUi) return;
     if (TimelineClip *clip = m_model->findClip(m_selectedClipId)) {
-        clip->setRotation(value);
+        const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+        if (clip->animRotation().isAnimated() && offset >= 0 && offset <= clip->durationMs()) {
+            clip->animRotation().setKeyframe(offset, static_cast<double>(value));
+            updateKeyframeUi();
+        } else {
+            clip->setRotation(value);
+        }
         emit clipPropertyModified(m_selectedClipId);
     }
 }
@@ -3927,8 +5057,20 @@ void InspectorWidget::onClipTimeOfDayChanged(int value)
             emit clipPropertyModified(cid);
         }
     } else if (m_selectedClipId > 0) {
-        m_model->setClipTimeOfDay(m_selectedClipId, enabled, val, false);
-        emit clipPropertyModified(m_selectedClipId);
+        TimelineClip *clip = m_model->findClip(m_selectedClipId);
+        if (clip) {
+            const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+            if (clip->animTimeOfDay().isAnimated() && offset >= 0 && offset <= clip->durationMs()) {
+                clip->animTimeOfDay().setKeyframe(offset, val);
+                ColorAdjustments adj = clip->colorAdjustments();
+                adj.timeOfDayEnabled = enabled;
+                clip->setColorAdjustments(adj);
+                updateKeyframeUi();
+            } else {
+                m_model->setClipTimeOfDay(m_selectedClipId, enabled, val, false);
+            }
+            emit clipPropertyModified(m_selectedClipId);
+        }
     }
 }
 
@@ -4380,5 +5522,430 @@ void InspectorWidget::onGlobalTimeOfDayResetAdvancedClicked()
     adj.timeOfDayLutStrength = 1.0f;
     m_model->setGlobalColorAdjustments(adj, false);
     emit globalPropertyModified();
+}
+
+// ============================================================================
+// KEYFRAME ANIMATION SYSTEM SLOTS & METHODS
+// ============================================================================
+
+void InspectorWidget::setPlayheadPosition(qint64 ms)
+{
+    m_playheadPositionMs = ms;
+    updateKeyframeUi();
+    if (!m_updatingUi && m_model && m_selectedClipId > 0) {
+        TimelineClip *clip = m_model->findClip(m_selectedClipId);
+        if (!clip) return;
+        const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+        if (offset < 0 || offset > clip->durationMs()) {
+            return;
+        }
+        m_updatingUi = true;
+        if (clip->animTimeOfDay().isAnimated() && m_clipTimeOfDaySlider) {
+            float val = clip->timeOfDayAt(m_playheadPositionMs);
+            m_clipTimeOfDaySlider->setValue(qRound(val * 100.0f));
+            updateTimeOfDayBadge(m_clipTimeOfDayBadge, val);
+        }
+        if (clip->animOpacity().isAnimated() && m_opacitySlider) {
+            int opVal = qRound(clip->opacityAt(m_playheadPositionMs) * 100.0);
+            m_opacitySlider->setValue(opVal);
+            m_opacityLabel->setText(QString("%1%").arg(opVal));
+        }
+        if (clip->animVolume().isAnimated() && m_volumeSlider) {
+            int volVal = qRound(clip->volumeAt(m_playheadPositionMs) * 100.0);
+            m_volumeSlider->setValue(volVal);
+            m_volumeLabel->setText(QString("%1%").arg(volVal));
+        }
+        if (clip->animScaleX().isAnimated() && m_scaleSlider) {
+            int scaleVal = qRound(clip->scaleAt(m_playheadPositionMs) * 100.0);
+            m_scaleSlider->setValue(qBound(10, scaleVal, 300));
+            m_scaleSpin->setValue(scaleVal);
+        }
+        if (clip->animRotation().isAnimated() && m_rotSlider) {
+            int rotVal = qRound(clip->rotationAt(m_playheadPositionMs));
+            m_rotSlider->setValue(qBound(-180, rotVal, 180));
+            m_rotSpin->setValue(rotVal);
+        }
+        if (clip->animPosition().isAnimated() && m_posXSpin && m_posYSpin) {
+            QPointF p = clip->positionAt(m_playheadPositionMs);
+            m_posXSpin->setValue(qRound(p.x()));
+            m_posYSpin->setValue(qRound(p.y()));
+        }
+        m_updatingUi = false;
+    }
+}
+
+void InspectorWidget::updateKeyframeUi()
+{
+    TimelineClip *clip = (m_model && m_selectedClipId > 0) ? m_model->findClip(m_selectedClipId) : nullptr;
+    if (!clip) {
+        if (m_kfBarTimeOfDay) m_kfBarTimeOfDay->updateState(false, false, false, false, KeyframeInterpolation::Linear);
+        if (m_kfBarOpacity) m_kfBarOpacity->updateState(false, false, false, false, KeyframeInterpolation::Linear);
+        if (m_kfBarScale) m_kfBarScale->updateState(false, false, false, false, KeyframeInterpolation::Linear);
+        if (m_kfBarRotation) m_kfBarRotation->updateState(false, false, false, false, KeyframeInterpolation::Linear);
+        if (m_kfBarPosition) m_kfBarPosition->updateState(false, false, false, false, KeyframeInterpolation::Linear);
+        if (m_kfBarVolume) m_kfBarVolume->updateState(false, false, false, false, KeyframeInterpolation::Linear);
+        return;
+    }
+
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+
+    auto updateBar = [offset](KeyframeControlBar *bar, const auto &animProp) {
+        if (!bar) return;
+        bool isAnimated = animProp.isAnimated();
+        bool hasAtPlayhead = animProp.hasKeyframeAt(offset, 15);
+        bool hasPrev = animProp.previousKeyframeTime(offset - 15) >= 0;
+        bool hasNext = animProp.nextKeyframeTime(offset + 15) >= 0;
+        KeyframeInterpolation interp = KeyframeInterpolation::Linear;
+        if (hasAtPlayhead) {
+            interp = animProp.keyframeAt(offset, 15).interpolation;
+        }
+        bar->updateState(isAnimated, hasAtPlayhead, hasPrev, hasNext, interp);
+    };
+
+    updateBar(m_kfBarTimeOfDay, clip->animTimeOfDay());
+    updateBar(m_kfBarOpacity, clip->animOpacity());
+    updateBar(m_kfBarScale, clip->animScaleX());
+    updateBar(m_kfBarRotation, clip->animRotation());
+    updateBar(m_kfBarPosition, clip->animPosition());
+    updateBar(m_kfBarVolume, clip->animVolume());
+}
+
+void InspectorWidget::onToggleKeyframeTimeOfDay()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    if (offset < 0 || offset > clip->durationMs()) return;
+
+    if (clip->animTimeOfDay().hasKeyframeAt(offset, 15)) {
+        clip->animTimeOfDay().removeKeyframeAt(offset, 15);
+    } else {
+        float val = clip->timeOfDayAt(m_playheadPositionMs);
+        clip->animTimeOfDay().setKeyframe(offset, val);
+    }
+    updateKeyframeUi();
+    emit clipPropertyModified(m_selectedClipId);
+}
+
+void InspectorWidget::onPrevKeyframeTimeOfDay()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    qint64 prev = clip->animTimeOfDay().previousKeyframeTime(offset - 15);
+    if (prev >= 0) {
+        emit playheadSeekRequested(clip->timelineInMs() + prev);
+    }
+}
+
+void InspectorWidget::onNextKeyframeTimeOfDay()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    qint64 next = clip->animTimeOfDay().nextKeyframeTime(offset + 15);
+    if (next >= 0) {
+        emit playheadSeekRequested(clip->timelineInMs() + next);
+    }
+}
+
+void InspectorWidget::onInterpKeyframeTimeOfDay(KeyframeInterpolation interp)
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    if (clip->animTimeOfDay().setInterpolationAt(offset, interp, 15)) {
+        updateKeyframeUi();
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onToggleKeyframeOpacity()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    if (offset < 0 || offset > clip->durationMs()) return;
+
+    if (clip->animOpacity().hasKeyframeAt(offset, 15)) {
+        clip->animOpacity().removeKeyframeAt(offset, 15);
+    } else {
+        if (!clip->animOpacity().isAnimated() && offset > 0) {
+            clip->animOpacity().setKeyframe(0, static_cast<float>(clip->opacity()));
+        }
+        float val = static_cast<float>(clip->opacityAt(m_playheadPositionMs));
+        clip->animOpacity().setKeyframe(offset, val);
+    }
+    updateKeyframeUi();
+    emit clipPropertyModified(m_selectedClipId);
+}
+
+void InspectorWidget::onPrevKeyframeOpacity()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    qint64 prev = clip->animOpacity().previousKeyframeTime(offset - 15);
+    if (prev >= 0) {
+        emit playheadSeekRequested(clip->timelineInMs() + prev);
+    }
+}
+
+void InspectorWidget::onNextKeyframeOpacity()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    qint64 next = clip->animOpacity().nextKeyframeTime(offset + 15);
+    if (next >= 0) {
+        emit playheadSeekRequested(clip->timelineInMs() + next);
+    }
+}
+
+void InspectorWidget::onInterpKeyframeOpacity(KeyframeInterpolation interp)
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    if (clip->animOpacity().setInterpolationAt(offset, interp, 15)) {
+        updateKeyframeUi();
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onToggleKeyframeScale()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    if (offset < 0 || offset > clip->durationMs()) return;
+
+    if (clip->animScaleX().hasKeyframeAt(offset, 15)) {
+        clip->animScaleX().removeKeyframeAt(offset, 15);
+        clip->animScaleY().removeKeyframeAt(offset, 15);
+    } else {
+        if (!clip->animScaleX().isAnimated() && offset > 0) {
+            clip->animScaleX().setKeyframe(0, clip->scaleX());
+            clip->animScaleY().setKeyframe(0, clip->scaleY());
+        }
+        double val = clip->scaleAt(m_playheadPositionMs);
+        clip->animScaleX().setKeyframe(offset, val);
+        clip->animScaleY().setKeyframe(offset, val);
+    }
+    updateKeyframeUi();
+    emit clipPropertyModified(m_selectedClipId);
+}
+
+void InspectorWidget::onPrevKeyframeScale()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    qint64 prev = clip->animScaleX().previousKeyframeTime(offset - 15);
+    if (prev >= 0) {
+        emit playheadSeekRequested(clip->timelineInMs() + prev);
+    }
+}
+
+void InspectorWidget::onNextKeyframeScale()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    qint64 next = clip->animScaleX().nextKeyframeTime(offset + 15);
+    if (next >= 0) {
+        emit playheadSeekRequested(clip->timelineInMs() + next);
+    }
+}
+
+void InspectorWidget::onInterpKeyframeScale(KeyframeInterpolation interp)
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    clip->animScaleX().setInterpolationAt(offset, interp, 15);
+    clip->animScaleY().setInterpolationAt(offset, interp, 15);
+    updateKeyframeUi();
+    emit clipPropertyModified(m_selectedClipId);
+}
+
+void InspectorWidget::onToggleKeyframeRotation()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    if (offset < 0 || offset > clip->durationMs()) return;
+
+    if (clip->animRotation().hasKeyframeAt(offset, 15)) {
+        clip->animRotation().removeKeyframeAt(offset, 15);
+    } else {
+        if (!clip->animRotation().isAnimated() && offset > 0) {
+            clip->animRotation().setKeyframe(0, clip->rotation());
+        }
+        double val = clip->rotationAt(m_playheadPositionMs);
+        clip->animRotation().setKeyframe(offset, val);
+    }
+    updateKeyframeUi();
+    emit clipPropertyModified(m_selectedClipId);
+}
+
+void InspectorWidget::onPrevKeyframeRotation()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    qint64 prev = clip->animRotation().previousKeyframeTime(offset - 15);
+    if (prev >= 0) {
+        emit playheadSeekRequested(clip->timelineInMs() + prev);
+    }
+}
+
+void InspectorWidget::onNextKeyframeRotation()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    qint64 next = clip->animRotation().nextKeyframeTime(offset + 15);
+    if (next >= 0) {
+        emit playheadSeekRequested(clip->timelineInMs() + next);
+    }
+}
+
+void InspectorWidget::onInterpKeyframeRotation(KeyframeInterpolation interp)
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    if (clip->animRotation().setInterpolationAt(offset, interp, 15)) {
+        updateKeyframeUi();
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onToggleKeyframePosition()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    if (offset < 0 || offset > clip->durationMs()) return;
+
+    if (clip->animPosition().hasKeyframeAt(offset, 15)) {
+        clip->animPosition().removeKeyframeAt(offset, 15);
+    } else {
+        if (!clip->animPosition().isAnimated() && offset > 0) {
+            clip->animPosition().setKeyframe(0, QPointF(clip->posX(), clip->posY()));
+        }
+        QPointF val = clip->positionAt(m_playheadPositionMs);
+        clip->animPosition().setKeyframe(offset, val);
+    }
+    updateKeyframeUi();
+    emit clipPropertyModified(m_selectedClipId);
+}
+
+void InspectorWidget::onPrevKeyframePosition()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    qint64 prev = clip->animPosition().previousKeyframeTime(offset - 15);
+    if (prev >= 0) {
+        emit playheadSeekRequested(clip->timelineInMs() + prev);
+    }
+}
+
+void InspectorWidget::onNextKeyframePosition()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    qint64 next = clip->animPosition().nextKeyframeTime(offset + 15);
+    if (next >= 0) {
+        emit playheadSeekRequested(clip->timelineInMs() + next);
+    }
+}
+
+void InspectorWidget::onInterpKeyframePosition(KeyframeInterpolation interp)
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    if (clip->animPosition().setInterpolationAt(offset, interp, 15)) {
+        updateKeyframeUi();
+        emit clipPropertyModified(m_selectedClipId);
+    }
+}
+
+void InspectorWidget::onToggleKeyframeVolume()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    if (offset < 0 || offset > clip->durationMs()) return;
+
+    if (clip->animVolume().hasKeyframeAt(offset, 15)) {
+        clip->animVolume().removeKeyframeAt(offset, 15);
+    } else {
+        float val = static_cast<float>(clip->volumeAt(m_playheadPositionMs));
+        applyVolumeKeyframe(clip, offset, val);
+    }
+    updateKeyframeUi();
+    emit clipPropertyModified(m_selectedClipId);
+}
+
+void InspectorWidget::onPrevKeyframeVolume()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    qint64 prev = clip->animVolume().previousKeyframeTime(offset - 15);
+    if (prev >= 0) {
+        emit playheadSeekRequested(clip->timelineInMs() + prev);
+    }
+}
+
+void InspectorWidget::onNextKeyframeVolume()
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    qint64 next = clip->animVolume().nextKeyframeTime(offset + 15);
+    if (next >= 0) {
+        emit playheadSeekRequested(clip->timelineInMs() + next);
+    }
+}
+
+void InspectorWidget::onInterpKeyframeVolume(KeyframeInterpolation interp)
+{
+    if (!m_model || m_selectedClipId <= 0) return;
+    TimelineClip *clip = m_model->findClip(m_selectedClipId);
+    if (!clip) return;
+    const qint64 offset = m_playheadPositionMs - clip->timelineInMs();
+    if (clip->animVolume().setInterpolationAt(offset, interp, 15)) {
+        updateKeyframeUi();
+        emit clipPropertyModified(m_selectedClipId);
+    }
 }
 

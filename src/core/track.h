@@ -6,7 +6,8 @@
 
 enum class TrackType {
     Video,
-    Audio
+    Audio,
+    Adjustment
 };
 
 class TimelineTrack {

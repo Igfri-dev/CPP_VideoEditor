@@ -1,6 +1,12 @@
 #include "videocompositor.h"
 #include "videoframedecoder.h"
+#include "gpuaccelerationmanager.h"
 #include "TimeOfDayFilter.h"
+#include "filters/chromakey.h"
+#include "engine/videostabilizer.h"
+#include "plugins/pluginregistry.h"
+#include "core/colormanagement.h"
+#include "engine/proxymanager.h"
 #include <QPainter>
 #include <QtMath>
 #include <cmath>
@@ -845,7 +851,118 @@ QImage VideoCompositor::applyColorAdjustments(const QImage &source, const ColorA
     return result;
 }
 
-QImage VideoCompositor::renderFrame(TimelineModel *model, qint64 timelineMs, const QSize &canvasSize)
+QImage VideoCompositor::applyMask(const QImage &source, const ClipMask &mask, qint64 timelineOffsetMs)
+{
+    if (!mask.enabled || source.isNull()) {
+        return source;
+    }
+
+    const int w = source.width();
+    const int h = source.height();
+
+    // 1. Create a grayscale mask
+    QImage maskImg(w, h, QImage::Format_Grayscale8);
+    maskImg.fill(0); // 0 = transparent
+
+    QPainter mp(&maskImg);
+    mp.setRenderHint(QPainter::Antialiasing);
+    mp.setBrush(Qt::white);
+    mp.setPen(Qt::NoPen);
+
+    QPointF centerOffset(0, 0);
+    if (mask.animCenter.isAnimated()) {
+        QPointF c = mask.animCenter.valueAt(timelineOffsetMs);
+        centerOffset = QPointF((c.x() - 0.5) * w, (c.y() - 0.5) * h);
+    }
+
+    QRectF baseRect(mask.normalizedRect.x() * w + centerOffset.x(),
+                   mask.normalizedRect.y() * h + centerOffset.y(),
+                   mask.normalizedRect.width() * w,
+                   mask.normalizedRect.height() * h);
+
+    if (mask.shape == MaskShape::Rectangle) {
+        mp.drawRect(baseRect);
+    } else if (mask.shape == MaskShape::Ellipse) {
+        mp.drawEllipse(baseRect);
+    } else if (mask.shape == MaskShape::Freehand) {
+        if (!mask.polygonPoints.isEmpty()) {
+            QPolygonF poly;
+            for (const QPointF &pt : mask.polygonPoints) {
+                poly.append(QPointF(pt.x() * w + centerOffset.x(), pt.y() * h + centerOffset.y()));
+            }
+            mp.drawPolygon(poly);
+        } else {
+            mp.drawRect(baseRect);
+        }
+    }
+    mp.end();
+
+    // 2. Feathering via fast separable box blur
+    int featherRadius = mask.feather;
+    if (mask.animFeather.isAnimated()) {
+        featherRadius = mask.animFeather.valueAt(timelineOffsetMs);
+    }
+    featherRadius = qBound(0, featherRadius, 200);
+
+    if (featherRadius > 1) {
+        QImage tempMask = maskImg;
+        int r = featherRadius;
+        int div = 2 * r + 1;
+        for (int y = 0; y < h; ++y) {
+            const uchar *srcLine = maskImg.constScanLine(y);
+            uchar *dstLine = tempMask.scanLine(y);
+            int sum = 0;
+            for (int i = -r; i <= r; ++i) {
+                sum += srcLine[qBound(0, i, w - 1)];
+            }
+            dstLine[0] = static_cast<uchar>(sum / div);
+            for (int x = 1; x < w; ++x) {
+                sum += srcLine[qBound(0, x + r, w - 1)] - srcLine[qBound(0, x - r - 1, w - 1)];
+                dstLine[x] = static_cast<uchar>(sum / div);
+            }
+        }
+        for (int x = 0; x < w; ++x) {
+            int sum = 0;
+            for (int i = -r; i <= r; ++i) {
+                sum += tempMask.constScanLine(qBound(0, i, h - 1))[x];
+            }
+            maskImg.scanLine(0)[x] = static_cast<uchar>(sum / div);
+            for (int y = 1; y < h; ++y) {
+                sum += tempMask.constScanLine(qBound(0, y + r, h - 1))[x] - tempMask.constScanLine(qBound(0, y - r - 1, h - 1))[x];
+                maskImg.scanLine(y)[x] = static_cast<uchar>(sum / div);
+            }
+        }
+    }
+
+    // 3. Multiply mask alpha into source
+    QImage result = source.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    double maskOp = mask.opacity;
+    if (mask.animOpacity.isAnimated()) {
+        maskOp = mask.animOpacity.valueAt(timelineOffsetMs);
+    }
+    maskOp = qBound(0.0, maskOp, 1.0);
+
+    for (int y = 0; y < h; ++y) {
+        QRgb *line = reinterpret_cast<QRgb*>(result.scanLine(y));
+        const uchar *mLine = maskImg.constScanLine(y);
+        for (int x = 0; x < w; ++x) {
+            uchar mVal = mLine[x];
+            double alphaFactor = mask.inverted ? (1.0 - mVal / 255.0) : (mVal / 255.0);
+            alphaFactor *= maskOp;
+
+            QRgb p = line[x];
+            int a = static_cast<int>(qAlpha(p) * alphaFactor);
+            int r = static_cast<int>(qRed(p) * alphaFactor);
+            int g = static_cast<int>(qGreen(p) * alphaFactor);
+            int b = static_cast<int>(qBlue(p) * alphaFactor);
+            line[x] = qRgba(r, g, b, a);
+        }
+    }
+
+    return result;
+}
+
+QImage VideoCompositor::renderFrame(TimelineModel *model, qint64 timelineMs, const QSize &canvasSize, bool forPreview)
 {
     QImage canvas(canvasSize, QImage::Format_RGB32);
     canvas.fill(Qt::black);
@@ -872,12 +989,63 @@ QImage VideoCompositor::renderFrame(TimelineModel *model, qint64 timelineMs, con
             continue;
         }
 
+        // Feature 4: Adjustment Layers modify the composite of all underlying tracks
+        if (clip->type() == ClipType::Adjustment) {
+            painter.end();
+            QImage underCanvas = canvas;
+            if (clip->hasFilters()) {
+                underCanvas = applyFilters(underCanvas, clip->filterStack());
+            } else if (clip->filter() != VisualFilter::None) {
+                underCanvas = applyFilter(underCanvas, clip->filter());
+            }
+            ColorAdjustments adj = clip->colorAdjustmentsAt(timelineMs);
+            if (!adj.isIdentity()) {
+                underCanvas = applyColorAdjustments(underCanvas, adj);
+            }
+            if (clip->hasChromaKey()) {
+                underCanvas = ChromaKeyProcessor::apply(underCanvas, clip->chromaKey());
+            }
+            if (clip->hasPluginEffects()) {
+                for (const auto &effect : clip->pluginEffects()) {
+                    if (!effect.enabled) continue;
+                    auto p = PluginRegistry::instance().findVideoPlugin(effect.pluginId);
+                    if (p) p->processFrame(underCanvas, timelineMs - clip->timelineInMs(), effect.parameters);
+                }
+            }
+            if (clip->hasMask()) {
+                underCanvas = applyMask(underCanvas, clip->mask(), timelineMs - clip->timelineInMs());
+            }
+            double op = clip->opacityAt(timelineMs);
+            if (op < 1.0) {
+                QPainter blendPainter(&canvas);
+                blendPainter.setOpacity(op);
+                blendPainter.drawImage(0, 0, underCanvas);
+                blendPainter.end();
+            } else {
+                canvas = underCanvas;
+            }
+            painter.begin(&canvas);
+            painter.setRenderHint(QPainter::Antialiasing);
+            painter.setRenderHint(QPainter::SmoothPixmapTransform);
+            continue;
+        }
+
         QImage frame;
         if (clip->type() == ClipType::Text) {
             frame = clip->renderTextImage(canvasSize);
+        } else if (clip->type() == ClipType::SolidColor) {
+            frame = QImage(canvasSize, QImage::Format_ARGB32_Premultiplied);
+            frame.fill(clip->color());
+        } else if (clip->type() == ClipType::Compound) {
+            if (clip->subTimeline()) {
+                frame = VideoCompositor::renderFrame(clip->subTimeline().get(), timelineMs - clip->timelineInMs(), canvasSize, forPreview);
+            } else {
+                continue;
+            }
         } else {
             qint64 sourceMs = clip->mapTimelineToSourceMs(timelineMs);
-            frame = VideoFrameDecoder::instance().getFrame(clip->filePath(), sourceMs, canvasSize);
+            QString mediaPath = ProxyManager::instance().effectiveMediaFilePath(clip->filePath());
+            frame = VideoFrameDecoder::instance().getFrame(mediaPath, sourceMs, canvasSize);
         }
         if (frame.isNull()) {
             continue;
@@ -888,15 +1056,43 @@ QImage VideoCompositor::renderFrame(TimelineModel *model, qint64 timelineMs, con
             continue;
         }
 
+        // Feature 7: Professional Chroma Key
+        if (clip->hasChromaKey()) {
+            frame = ChromaKeyProcessor::apply(frame, clip->chromaKey());
+        }
+
+        // Feature 8: Video Stabilization (Crop and corrective offset)
+        if (clip->hasStabilization()) {
+            StabilizationTransform st;
+            st.scale = clip->stabilization().cropFactor;
+            frame = VideoStabilizer::applyStabilization(frame, st);
+        }
+
+        // Visual Filters Stack
         if (clip->hasFilters()) {
             frame = applyFilters(frame, clip->filterStack());
         } else if (clip->filter() != VisualFilter::None) {
             frame = applyFilter(frame, clip->filter());
         }
 
+        // Feature 13: Video Plugin Effects
+        if (clip->hasPluginEffects()) {
+            for (const auto &effect : clip->pluginEffects()) {
+                if (!effect.enabled) continue;
+                auto p = PluginRegistry::instance().findVideoPlugin(effect.pluginId);
+                if (p) p->processFrame(frame, timelineMs - clip->timelineInMs(), effect.parameters);
+            }
+        }
+
+        // Feature 5: Masks with Feathering
+        if (clip->hasMask()) {
+            frame = applyMask(frame, clip->mask(), timelineMs - clip->timelineInMs());
+        }
+
         // Apply clip-level color & luminosity adjustments
-        if (!clip->colorAdjustments().isIdentity()) {
-            frame = applyColorAdjustments(frame, clip->colorAdjustments());
+        ColorAdjustments clipAdj = clip->colorAdjustmentsAt(timelineMs);
+        if (!clipAdj.isIdentity()) {
+            frame = applyColorAdjustments(frame, clipAdj);
         }
 
         // Calculate base size fitting within canvas maintaining aspect ratio
@@ -912,8 +1108,6 @@ QImage VideoCompositor::renderFrame(TimelineModel *model, qint64 timelineMs, con
             } else if (clip->scaleMode() == ClipScaleMode::Stretch) {
                 baseSize = canvasSize;
             } else {
-                // Default: FillCrop (KeepAspectRatioByExpanding)
-                // Preserves original video aspect ratio and fills the canvas, cleanly cutting overflowing content
                 baseSize = frame.size().scaled(canvasSize, Qt::KeepAspectRatioByExpanding);
             }
         }
@@ -951,11 +1145,14 @@ QImage VideoCompositor::renderFrame(TimelineModel *model, qint64 timelineMs, con
             painter.translate((1.0 - outFactor) * canvasSize.width(), 0.0);
         }
 
-        if (qAbs(clip->rotation()) > 0.001) {
-            painter.rotate(clip->rotation());
+        double curRot = clip->rotationAt(timelineMs);
+        if (qAbs(curRot) > 0.001) {
+            painter.rotate(curRot);
         }
-        if (qAbs(clip->scaleX() - 1.0) > 0.001 || qAbs(clip->scaleY() - 1.0) > 0.001) {
-            painter.scale(clip->scaleX(), clip->scaleY());
+        double curScaleX = clip->scaleXAt(timelineMs);
+        double curScaleY = clip->scaleYAt(timelineMs);
+        if (qAbs(curScaleX - 1.0) > 0.001 || qAbs(curScaleY - 1.0) > 0.001) {
+            painter.scale(curScaleX, curScaleY);
         }
 
         // Apply zoom transition
@@ -1008,7 +1205,21 @@ QImage VideoCompositor::renderFrame(TimelineModel *model, qint64 timelineMs, con
 
     // Apply global/master video color & luminosity adjustments to the final composite
     if (model && !model->globalColorAdjustments().isIdentity()) {
-        canvas = applyColorAdjustments(canvas, model->globalColorAdjustments());
+        ColorAdjustments adj = model->globalColorAdjustments();
+        if (!adj.isIdentity()) {
+            canvas = applyColorAdjustments(canvas, adj);
+        }
+    }
+
+    // Feature 10: Color Management color space reproduction
+    if (ColorSpaceManager::instance().projectWorkingSpace() != ColorSpaceStandard::sRGB) {
+        canvas = ColorSpaceManager::processFrameColorSpace(
+            canvas,
+            ColorSpaceStandard::sRGB,
+            TransferFunction::sRGB,
+            ColorSpaceManager::instance().projectWorkingSpace(),
+            ColorSpaceManager::instance().projectTransferFunction()
+        );
     }
 
     return canvas;

@@ -1,6 +1,9 @@
 #include "previewwidget.h"
 #include "engine/videocompositor.h"
 #include "engine/videoframedecoder.h"
+#include "engine/gpuaccelerationmanager.h"
+#include "engine/gpusettingsdialog.h"
+#include "filters/TimeOfDayFilter.h"
 #include "medialibrary/mediaitem.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -14,6 +17,8 @@
 #include <QDropEvent>
 #include <QMimeData>
 #include <QStyle>
+#include <QMenu>
+#include <QContextMenuEvent>
 #include <cmath>
 
 // ---------------------------------------------------------------------------
@@ -21,13 +26,46 @@
 // ---------------------------------------------------------------------------
 
 MonitorWidget::MonitorWidget(TimelineModel *model, QWidget *parent)
-    : QWidget(parent)
+    : QOpenGLWidget(parent)
     , m_model(model)
 {
+    QSurfaceFormat format;
+    format.setVersion(3, 3);
+    format.setProfile(QSurfaceFormat::CoreProfile);
+    setFormat(format);
+
     setMouseTracking(true);
     setAcceptDrops(true);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setMinimumSize(320, 180);
+}
+
+MonitorWidget::~MonitorWidget()
+{
+    makeCurrent();
+    if (m_videoTexture) {
+        if (m_videoTexture->isCreated()) {
+            m_videoTexture->destroy();
+        }
+        delete m_videoTexture;
+        m_videoTexture = nullptr;
+    }
+    if (m_lutTexture3D) {
+        if (m_lutTexture3D->isCreated()) {
+            m_lutTexture3D->destroy();
+        }
+        delete m_lutTexture3D;
+        m_lutTexture3D = nullptr;
+    }
+    if (m_vao.isCreated()) {
+        m_vao.destroy();
+    }
+    if (m_vbo.isCreated()) {
+        m_vbo.destroy();
+    }
+    delete m_shaderProgram;
+    m_shaderProgram = nullptr;
+    doneCurrent();
 }
 
 void MonitorWidget::setFrame(const QImage &frame)
@@ -150,10 +188,13 @@ MonitorWidget::GizmoGeometry MonitorWidget::calculateGizmoGeometry() const
         geom.displayRect.top() + cy_canvas * geom.scaleScreenY
     );
 
-    double halfW = (baseW * clip->scaleX() / 2.0) * geom.scaleScreenX;
-    double halfH = (baseH * clip->scaleY() / 2.0) * geom.scaleScreenY;
+    double curScaleX = clip->scaleXAt(m_currentPositionMs);
+    double curScaleY = clip->scaleYAt(m_currentPositionMs);
+    double halfW = (baseW * curScaleX / 2.0) * geom.scaleScreenX;
+    double halfH = (baseH * curScaleY / 2.0) * geom.scaleScreenY;
 
-    double rad = qDegreesToRadians(clip->rotation());
+    double curRot = clip->rotationAt(m_currentPositionMs);
+    double rad = qDegreesToRadians(curRot);
     double cosR = std::cos(rad);
     double sinR = std::sin(rad);
 
@@ -173,6 +214,8 @@ MonitorWidget::GizmoGeometry MonitorWidget::calculateGizmoGeometry() const
 
     // Rotation handle 28px above top-center in local orientation
     geom.pRot = transformLocal(0, -halfH - 28.0);
+    // Keyframe diamond badge at top-right of bounding box
+    geom.kfBadgeRect = QRectF(geom.pTR.x() + 4, geom.pTR.y() - 22, 22, 18);
     geom.isTextClip = (clip->type() == ClipType::Text);
     geom.isValid = true;
     return geom;
@@ -194,6 +237,11 @@ MonitorWidget::GizmoAction MonitorWidget::hitTest(const QPointF &pos, const Gizm
         QPointF proj = a + t * ab;
         return std::hypot(p.x() - proj.x(), p.y() - proj.y());
     };
+
+    // Keyframe diamond badge check
+    if (geom.kfBadgeRect.contains(pos)) {
+        return GizmoAction::ToggleKeyframe;
+    }
 
     // Rotation handle check (radius ~14)
     if (dist(pos, geom.pRot) <= 14.0) {
@@ -226,15 +274,263 @@ MonitorWidget::GizmoAction MonitorWidget::hitTest(const QPointF &pos, const Gizm
     return GizmoAction::None;
 }
 
-void MonitorWidget::paintEvent(QPaintEvent *event)
+void MonitorWidget::initializeGL()
 {
-    Q_UNUSED(event);
-    QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setRenderHint(QPainter::SmoothPixmapTransform);
+    initializeOpenGLFunctions();
 
-    // Background
-    p.fillRect(rect(), QColor("#0b0d12"));
+    const char *vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+    const char *renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    if (vendor && renderer) {
+        GpuAccelerationManager::instance().updateFromGlInfo(
+            QString::fromUtf8(vendor), QString::fromUtf8(renderer));
+    }
+
+    m_shaderProgram = new QOpenGLShaderProgram(this);
+
+    const char *vShaderSrc =
+        "#version 330 core\n"
+        "layout(location = 0) in vec2 a_pos;\n"
+        "layout(location = 1) in vec2 a_tex;\n"
+        "out vec2 TexCoord;\n"
+        "void main() {\n"
+        "    gl_Position = vec4(a_pos, 0.0, 1.0);\n"
+        "    TexCoord = a_tex;\n"
+        "}\n";
+
+    std::string fShaderStr = TimeOfDayFilter::GetFragmentShaderSource();
+    if (fShaderStr.empty()) {
+        fShaderStr =
+            "#version 330 core\n"
+            "in vec2 TexCoord;\n"
+            "out vec4 FragColor;\n"
+            "uniform sampler2D u_texture;\n"
+            "void main() {\n"
+            "    FragColor = texture(u_texture, TexCoord);\n"
+            "}\n";
+    }
+
+    bool ok = m_shaderProgram->addShaderFromSourceCode(QOpenGLShader::Vertex, vShaderSrc) &&
+              m_shaderProgram->addShaderFromSourceCode(QOpenGLShader::Fragment, fShaderStr.c_str()) &&
+              m_shaderProgram->link();
+
+    if (!ok) {
+        // Fallback for legacy OpenGL 2.1 / Compatibility contexts
+        delete m_shaderProgram;
+        m_shaderProgram = new QOpenGLShaderProgram(this);
+
+        const char *vShaderSrc120 =
+            "#version 120\n"
+            "attribute vec2 a_pos;\n"
+            "attribute vec2 a_tex;\n"
+            "varying vec2 TexCoord;\n"
+            "void main() {\n"
+            "    gl_Position = vec4(a_pos, 0.0, 1.0);\n"
+            "    TexCoord = a_tex;\n"
+            "}\n";
+
+        std::string f120 = fShaderStr;
+        size_t verPos = f120.find("#version 330 core");
+        if (verPos != std::string::npos) {
+            f120.replace(verPos, 17, "#version 120");
+        }
+        size_t inPos = f120.find("in vec2 TexCoord;");
+        if (inPos != std::string::npos) {
+            f120.replace(inPos, 17, "varying vec2 TexCoord;");
+        }
+        size_t outPos = f120.find("out vec4 FragColor;");
+        if (outPos != std::string::npos) {
+            f120.replace(outPos, 19, "// out vec4 FragColor;");
+        }
+        size_t fcPos = 0;
+        while ((fcPos = f120.find("FragColor", fcPos)) != std::string::npos) {
+            f120.replace(fcPos, 9, "gl_FragColor");
+            fcPos += 12;
+        }
+
+        ok = m_shaderProgram->addShaderFromSourceCode(QOpenGLShader::Vertex, vShaderSrc120) &&
+             m_shaderProgram->addShaderFromSourceCode(QOpenGLShader::Fragment, f120.c_str()) &&
+             m_shaderProgram->link();
+    }
+
+    if (ok) {
+        // Create VAO and VBO for screen-aligned rendering quad
+        if (!m_vao.isCreated()) {
+            m_vao.create();
+        }
+        m_vao.bind();
+
+        if (!m_vbo.isCreated()) {
+            m_vbo.create();
+        }
+        m_vbo.bind();
+
+        static const float vertices[] = {
+            -1.0f,  1.0f, 0.0f, 0.0f,
+            -1.0f, -1.0f, 0.0f, 1.0f,
+             1.0f,  1.0f, 1.0f, 0.0f,
+             1.0f, -1.0f, 1.0f, 1.0f
+        };
+        m_vbo.allocate(vertices, sizeof(vertices));
+
+        m_shaderProgram->enableAttributeArray(0);
+        m_shaderProgram->setAttributeBuffer(0, GL_FLOAT, 0, 2, 4 * sizeof(float));
+
+        m_shaderProgram->enableAttributeArray(1);
+        m_shaderProgram->setAttributeBuffer(1, GL_FLOAT, 2 * sizeof(float), 2, 4 * sizeof(float));
+
+        m_vbo.release();
+        m_vao.release();
+
+        // Create neutral 3D LUT texture to satisfy sampler3D u_lutTexture binding on unit 1
+        if (!m_lutTexture3D) {
+            m_lutTexture3D = new QOpenGLTexture(QOpenGLTexture::Target3D);
+            m_lutTexture3D->setSize(2, 2, 2);
+            m_lutTexture3D->setFormat(QOpenGLTexture::RGB8_UNorm);
+            m_lutTexture3D->allocateStorage(QOpenGLTexture::RGB, QOpenGLTexture::UInt8);
+            static const uint8_t neutralLut[2 * 2 * 2 * 3] = {
+                0,   0,   0,     255, 0,   0,
+                0,   255, 0,     255, 255, 0,
+                0,   0,   255,   255, 0,   255,
+                0,   255, 255,   255, 255, 255
+            };
+            m_lutTexture3D->setData(QOpenGLTexture::RGB, QOpenGLTexture::UInt8, neutralLut);
+            m_lutTexture3D->setMinificationFilter(QOpenGLTexture::Linear);
+            m_lutTexture3D->setMagnificationFilter(QOpenGLTexture::Linear);
+            m_lutTexture3D->setWrapMode(QOpenGLTexture::ClampToEdge);
+        }
+
+        m_glInitialized = true;
+    } else {
+        qWarning() << "Failed to compile MonitorWidget shaders:" << m_shaderProgram->log();
+        delete m_shaderProgram;
+        m_shaderProgram = nullptr;
+        m_glInitialized = false;
+    }
+}
+
+void MonitorWidget::resizeGL(int w, int h)
+{
+    glViewport(0, 0, w, h);
+}
+
+bool MonitorWidget::renderGpuFrame(const QRect &dRect, const ColorAdjustments &adj)
+{
+    if (dRect.width() <= 0 || dRect.height() <= 0 || m_currentFrame.isNull() || !m_glInitialized || !m_shaderProgram) {
+        return false;
+    }
+
+    if (!m_videoTexture || m_videoTexture->width() != m_currentFrame.width() || m_videoTexture->height() != m_currentFrame.height()) {
+        if (m_videoTexture) {
+            if (m_videoTexture->isCreated()) {
+                m_videoTexture->destroy();
+            }
+            delete m_videoTexture;
+            m_videoTexture = nullptr;
+        }
+        m_videoTexture = new QOpenGLTexture(QOpenGLTexture::Target2D);
+        m_videoTexture->setSize(m_currentFrame.width(), m_currentFrame.height());
+        m_videoTexture->setFormat(QOpenGLTexture::RGBA8_UNorm);
+        m_videoTexture->allocateStorage(QOpenGLTexture::RGBA, QOpenGLTexture::UInt8);
+        m_videoTexture->setMinificationFilter(QOpenGLTexture::Linear);
+        m_videoTexture->setMagnificationFilter(QOpenGLTexture::Linear);
+        m_videoTexture->setWrapMode(QOpenGLTexture::ClampToEdge);
+    }
+
+    QImage glImg = (m_currentFrame.format() == QImage::Format_RGBA8888 || m_currentFrame.format() == QImage::Format_RGBA8888_Premultiplied)
+                   ? m_currentFrame
+                   : m_currentFrame.convertToFormat(QImage::Format_RGBA8888);
+    m_videoTexture->setData(0, QOpenGLTexture::RGBA, QOpenGLTexture::UInt8, glImg.constBits());
+
+    qreal dpr = devicePixelRatioF();
+    int vx = qRound(dRect.left() * dpr);
+    int vy = qRound((height() - dRect.bottom()) * dpr);
+    int vw = qRound(dRect.width() * dpr);
+    int vh = qRound(dRect.height() * dpr);
+    glViewport(vx, vy, vw, vh);
+
+    if (!m_shaderProgram->bind()) {
+        return false;
+    }
+
+    // Bind 2D video frame to texture unit 0
+    glActiveTexture(GL_TEXTURE0);
+    m_videoTexture->bind(0);
+    m_shaderProgram->setUniformValue("u_texture", 0);
+
+    // Bind 3D LUT texture to unit 1 to prevent GL_INVALID_OPERATION from sampler type mismatch on unit 0
+    if (m_lutTexture3D) {
+        glActiveTexture(GL_TEXTURE1);
+        m_lutTexture3D->bind(1);
+        m_shaderProgram->setUniformValue("u_lutTexture", 1);
+    }
+
+    float targetTime = adj.timeOfDay;
+    float sourceTime = (adj.timeOfDaySourceMode == TimeOfDaySourceMode::Auto) ? 0.60f : adj.timeOfDaySourceTime;
+    RelativeSettings settings;
+    settings.intensity = adj.timeOfDayIntensity;
+    settings.skinProtectionFactor = adj.timeOfDaySkinProtection;
+    settings.skyInfluenceFactor = adj.timeOfDaySkyInfluence;
+    settings.highlightWarmthBias = adj.timeOfDayHighlightWarmth;
+    settings.shadowCoolnessBias = adj.timeOfDayShadowCoolness;
+    settings.exposureBias = adj.timeOfDayExposureBias;
+    settings.lutStrengthFactor = adj.timeOfDayLutStrength;
+
+    TimeProfile prof = TimeOfDayFilter::CalculateRelativeProfile(sourceTime, targetTime, settings);
+    auto gains = TimeOfDayFilter::KelvinToRGB(prof.temperature, prof.tint);
+    auto shadowG = TimeOfDayFilter::KelvinToRGB(prof.shadowTemperature, prof.shadowTint);
+    auto midG = TimeOfDayFilter::KelvinToRGB(prof.midtoneTemperature, 0.0f);
+    auto highG = TimeOfDayFilter::KelvinToRGB(prof.highlightTemperature, 0.0f);
+
+    m_shaderProgram->setUniformValue("u_exposureEV", prof.exposureEV);
+    m_shaderProgram->setUniformValue("u_whiteBalanceGains", gains[0], gains[1], gains[2]);
+    m_shaderProgram->setUniformValue("u_shadowGains", shadowG[0], shadowG[1], shadowG[2]);
+    m_shaderProgram->setUniformValue("u_midtoneGains", midG[0], midG[1], midG[2]);
+    m_shaderProgram->setUniformValue("u_highlightGains", highG[0], highG[1], highG[2]);
+    m_shaderProgram->setUniformValue("u_contrast", prof.contrast);
+    m_shaderProgram->setUniformValue("u_saturation", prof.saturation);
+    m_shaderProgram->setUniformValue("u_shadowLift", prof.shadowLift);
+    m_shaderProgram->setUniformValue("u_midtoneGain", prof.midtoneGain);
+    m_shaderProgram->setUniformValue("u_highlightGain", prof.highlightGain);
+    m_shaderProgram->setUniformValue("u_highlightRolloff", prof.highlightRolloff);
+    m_shaderProgram->setUniformValue("u_purkinjeStrength", prof.purkinjeStrength);
+    m_shaderProgram->setUniformValue("u_skyExposureDrop", prof.skyExposureDrop);
+    m_shaderProgram->setUniformValue("u_skinProtection", prof.skinProtection);
+    m_shaderProgram->setUniformValue("u_lutStrength", 0.0f); // Analytical model calibrated, avoid uninitialized 3D LUT sampling
+    m_shaderProgram->setUniformValue("u_timeOfDay", targetTime);
+    m_shaderProgram->setUniformValue("u_intensity", adj.timeOfDayEnabled ? adj.timeOfDayIntensity : 0.0f);
+
+    if (m_vao.isCreated()) {
+        m_vao.bind();
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        m_vao.release();
+    } else {
+        m_vbo.bind();
+        m_shaderProgram->enableAttributeArray(0);
+        m_shaderProgram->setAttributeBuffer(0, GL_FLOAT, 0, 2, 4 * sizeof(float));
+        m_shaderProgram->enableAttributeArray(1);
+        m_shaderProgram->setAttributeBuffer(1, GL_FLOAT, 2 * sizeof(float), 2, 4 * sizeof(float));
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        m_shaderProgram->disableAttributeArray(0);
+        m_shaderProgram->disableAttributeArray(1);
+        m_vbo.release();
+    }
+
+    if (m_lutTexture3D) {
+        glActiveTexture(GL_TEXTURE1);
+        m_lutTexture3D->release();
+    }
+    glActiveTexture(GL_TEXTURE0);
+    m_videoTexture->release();
+    m_shaderProgram->release();
+
+    glViewport(0, 0, qRound(width() * dpr), qRound(height() * dpr));
+    return true;
+}
+
+void MonitorWidget::paintGL()
+{
+    glClearColor(0.043f, 0.051f, 0.071f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
 
     GizmoGeometry geom = calculateGizmoGeometry();
     QRect dRect = geom.isValid ? geom.displayRect : QRect();
@@ -249,12 +545,54 @@ void MonitorWidget::paintEvent(QPaintEvent *event)
         );
     }
 
-    // Canvas frame black backdrop
-    p.fillRect(dRect, Qt::black);
+    ColorAdjustments adj;
+    if (m_model) {
+        adj = m_model->globalColorAdjustments();
+        if (!adj.timeOfDayEnabled || adj.timeOfDayIntensity <= 0.001f) {
+            if (m_selectedClipId > 0) {
+                if (TimelineClip *selClip = m_model->findClip(m_selectedClipId)) {
+                    ColorAdjustments clipAdj = selClip->colorAdjustmentsAt(m_currentPositionMs);
+                    if (clipAdj.timeOfDayEnabled && clipAdj.timeOfDayIntensity > 0.001f) {
+                        adj = clipAdj;
+                    }
+                }
+            } else {
+                for (const auto &track : m_model->videoTracks()) {
+                    for (const auto &c : track.clips()) {
+                        if (m_currentPositionMs >= c.timelineInMs() && m_currentPositionMs < c.timelineOutMs()) {
+                            ColorAdjustments clipAdj = c.colorAdjustmentsAt(m_currentPositionMs);
+                            if (clipAdj.timeOfDayEnabled && clipAdj.timeOfDayIntensity > 0.001f) {
+                                adj = clipAdj;
+                                break;
+                            }
+                        }
+                    }
+                    if (adj.timeOfDayEnabled) break;
+                }
+            }
+        }
+    }
 
-    // Draw composited video frame
-    if (!m_currentFrame.isNull()) {
-        p.drawImage(dRect, m_currentFrame);
+    // VideoCompositor already faithfully renders all visual tracks, adjustment layers, filters, and color adjustments into m_currentFrame
+    bool needGpuShader = false;
+
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
+
+    bool gpuRendered = false;
+    if (needGpuShader) {
+        p.beginNativePainting();
+        gpuRendered = renderGpuFrame(dRect, adj);
+        p.endNativePainting();
+    }
+
+    // Canvas frame black backdrop & fallback image if GPU render was not executed
+    if (!gpuRendered) {
+        p.fillRect(dRect, Qt::black);
+        if (!m_currentFrame.isNull()) {
+            p.drawImage(dRect, m_currentFrame);
+        }
     }
 
     // Canvas border
@@ -649,6 +987,33 @@ void MonitorWidget::paintEvent(QPaintEvent *event)
                 p.drawText(badgeRect, Qt::AlignCenter, widthLabel);
             }
         }
+
+        // Draw Keyframe Badge at top-right of gizmo
+        TimelineClip *selectedClip = (m_model && m_selectedClipId > 0) ? m_model->findClip(m_selectedClipId) : nullptr;
+        if (selectedClip) {
+            const qint64 offset = m_currentPositionMs - selectedClip->timelineInMs();
+            bool hasKfNow = selectedClip->animPosition().hasKeyframeAt(offset, 15) ||
+                            selectedClip->animRotation().hasKeyframeAt(offset, 15) ||
+                            selectedClip->animScaleX().hasKeyframeAt(offset, 15);
+            bool isAnim = selectedClip->animPosition().isAnimated() ||
+                          selectedClip->animRotation().isAnimated() ||
+                          selectedClip->animScaleX().isAnimated();
+
+            p.save();
+            p.setRenderHint(QPainter::Antialiasing, true);
+            QRectF kfBadge = geom.kfBadgeRect;
+            p.setPen(QPen(hasKfNow ? QColor("#f1e05a") : (isAnim ? QColor("#58a6ff") : QColor("#30363d")), 1.5));
+            p.setBrush(hasKfNow ? QColor("#f1e05a") : QColor(22, 27, 34, 230));
+            p.drawRoundedRect(kfBadge, 3, 3);
+
+            p.setPen(hasKfNow ? QColor("#0d1117") : (isAnim ? QColor("#58a6ff") : QColor("#8b949e")));
+            QFont kfFont = p.font();
+            kfFont.setBold(true);
+            kfFont.setPixelSize(11);
+            p.setFont(kfFont);
+            p.drawText(kfBadge, Qt::AlignCenter, "◆");
+            p.restore();
+        }
     }
 }
 
@@ -710,21 +1075,47 @@ void MonitorWidget::mousePressEvent(QMouseEvent *event)
     GizmoGeometry geom = calculateGizmoGeometry();
     GizmoAction action = hitTest(event->position(), geom);
 
+    if (action == GizmoAction::ToggleKeyframe && geom.isValid) {
+        TimelineClip *clip = m_model ? m_model->findClip(m_selectedClipId) : nullptr;
+        if (clip) {
+            const qint64 offset = m_currentPositionMs - clip->timelineInMs();
+            if (offset >= 0 && offset <= clip->durationMs()) {
+                bool hasKfNow = clip->animPosition().hasKeyframeAt(offset, 15) ||
+                                clip->animRotation().hasKeyframeAt(offset, 15) ||
+                                clip->animScaleX().hasKeyframeAt(offset, 15);
+                if (hasKfNow) {
+                    clip->animPosition().removeKeyframeAt(offset, 15);
+                    clip->animRotation().removeKeyframeAt(offset, 15);
+                    clip->animScaleX().removeKeyframeAt(offset, 15);
+                    clip->animScaleY().removeKeyframeAt(offset, 15);
+                } else {
+                    clip->animPosition().setKeyframe(offset, clip->positionAt(m_currentPositionMs));
+                    clip->animRotation().setKeyframe(offset, clip->rotationAt(m_currentPositionMs));
+                    clip->animScaleX().setKeyframe(offset, clip->scaleXAt(m_currentPositionMs));
+                    clip->animScaleY().setKeyframe(offset, clip->scaleYAt(m_currentPositionMs));
+                }
+                emit clipTransformChanged(clip->id());
+                update();
+            }
+        }
+        return;
+    }
+
     if (action != GizmoAction::None && geom.isValid) {
         TimelineClip *clip = m_model->findClip(m_selectedClipId);
         if (clip) {
             m_currentAction = action;
             m_initialMousePos = event->position();
-            m_initialClipPosX = clip->posX();
-            m_initialClipPosY = clip->posY();
+            m_initialClipPosX = clip->posXAt(m_currentPositionMs);
+            m_initialClipPosY = clip->posYAt(m_currentPositionMs);
             m_initialMouseDist = std::hypot(event->position().x() - geom.centerScreen.x(),
                                             event->position().y() - geom.centerScreen.y());
             if (m_initialMouseDist < 1.0) m_initialMouseDist = 1.0;
-            m_initialClipScaleX = clip->scaleX();
-            m_initialClipScaleY = clip->scaleY();
+            m_initialClipScaleX = clip->scaleXAt(m_currentPositionMs);
+            m_initialClipScaleY = clip->scaleYAt(m_currentPositionMs);
             m_initialMouseAngle = qRadiansToDegrees(std::atan2(event->position().y() - geom.centerScreen.y(),
                                                               event->position().x() - geom.centerScreen.x()));
-            m_initialClipRotation = clip->rotation();
+            m_initialClipRotation = clip->rotationAt(m_currentPositionMs);
 
             QSize canvas169(1920, 1080);
             QSize baseSize = getClipBaseSize(clip, canvas169);
@@ -808,6 +1199,10 @@ void MonitorWidget::mouseMoveEvent(QMouseEvent *event)
         };
 
         switch (hoverAction) {
+        case GizmoAction::ToggleKeyframe:
+            setCursor(Qt::PointingHandCursor);
+            setToolTip("Alternar fotograma clave de transformación en el cabezal");
+            break;
         case GizmoAction::Rotate:
             setCursor(Qt::PointingHandCursor);
             break;
@@ -987,8 +1382,19 @@ void MonitorWidget::mouseMoveEvent(QMouseEvent *event)
 
         m_activeGuides = snapRes.guides;
 
-        clip->setPosX(snapRes.snappedCenter.x - 960.0f);
-        clip->setPosY(snapRes.snappedCenter.y - 540.0f);
+        float finalPosX = snapRes.snappedCenter.x - 960.0f;
+        float finalPosY = snapRes.snappedCenter.y - 540.0f;
+        clip->setPosX(finalPosX);
+        clip->setPosY(finalPosY);
+
+        const qint64 offset = qBound(0LL, m_currentPositionMs - clip->timelineInMs(), clip->durationMs());
+        if (m_autoKeyframe || clip->animPosition().isAnimated()) {
+            if (!clip->animPosition().isAnimated() && offset > 0) {
+                clip->animPosition().setKeyframe(0, QPointF(m_initialClipPosX, m_initialClipPosY));
+            }
+            clip->animPosition().setKeyframe(offset, QPointF(finalPosX, finalPosY));
+        }
+
         emit clipTransformChanged(clip->id());
         update();
     } else if (m_currentAction == GizmoAction::Rotate) {
@@ -1003,7 +1409,16 @@ void MonitorWidget::mouseMoveEvent(QMouseEvent *event)
         if (isAltPressed) effectiveSettings.enabled = false;
 
         auto rotRes = m_snapEngine.snapRotation(rawRotation, effectiveSettings, isShiftPressed);
-        clip->setRotation(rotRes.snappedAngle);
+        float finalRot = rotRes.snappedAngle;
+        clip->setRotation(finalRot);
+
+        const qint64 offset = qBound(0LL, m_currentPositionMs - clip->timelineInMs(), clip->durationMs());
+        if (m_autoKeyframe || clip->animRotation().isAnimated()) {
+            if (!clip->animRotation().isAnimated() && offset > 0) {
+                clip->animRotation().setKeyframe(0, m_initialClipRotation);
+            }
+            clip->animRotation().setKeyframe(offset, finalRot);
+        }
 
         m_activeGuides.clear();
         m_isRotating = true;
@@ -1067,6 +1482,15 @@ void MonitorWidget::mouseMoveEvent(QMouseEvent *event)
 
         int finalWidth = qRound(newWidth);
         clip->setTextBoxWidth(finalWidth);
+
+        const qint64 offset = qBound(0LL, m_currentPositionMs - clip->timelineInMs(), clip->durationMs());
+        if (m_autoKeyframe || clip->animPosition().isAnimated()) {
+            if (!clip->animPosition().isAnimated() && offset > 0) {
+                clip->animPosition().setKeyframe(0, QPointF(m_initialClipPosX, m_initialClipPosY));
+            }
+            clip->animPosition().setKeyframe(offset, QPointF(clip->posX(), clip->posY()));
+        }
+
         m_activeWidthValue = finalWidth;
         m_isResizingWidth = true;
 
@@ -1124,6 +1548,17 @@ void MonitorWidget::mouseMoveEvent(QMouseEvent *event)
 
         clip->setScaleX(newScaleX);
         clip->setScaleY(newScaleY);
+
+        const qint64 offset = qBound(0LL, m_currentPositionMs - clip->timelineInMs(), clip->durationMs());
+        if (m_autoKeyframe || clip->animScaleX().isAnimated()) {
+            if (!clip->animScaleX().isAnimated() && offset > 0) {
+                clip->animScaleX().setKeyframe(0, m_initialClipScaleX);
+                clip->animScaleY().setKeyframe(0, m_initialClipScaleY);
+            }
+            clip->animScaleX().setKeyframe(offset, newScaleX);
+            clip->animScaleY().setKeyframe(offset, newScaleY);
+        }
+
         emit clipTransformChanged(clip->id());
         update();
     }
@@ -1227,6 +1662,97 @@ void MonitorWidget::mouseDoubleClickEvent(QMouseEvent *event)
         }
     }
     QWidget::mouseDoubleClickEvent(event);
+}
+
+void MonitorWidget::contextMenuEvent(QContextMenuEvent *event)
+{
+    TimelineClip *clip = m_model ? m_model->findClip(m_selectedClipId) : nullptr;
+    if (!clip) {
+        QWidget::contextMenuEvent(event);
+        return;
+    }
+
+    QMenu menu(this);
+    const qint64 offset = m_currentPositionMs - clip->timelineInMs();
+    bool inRange = (offset >= 0 && offset <= clip->durationMs());
+
+    if (inRange) {
+        bool hasKf = clip->animPosition().hasKeyframeAt(offset, 15) ||
+                     clip->animRotation().hasKeyframeAt(offset, 15) ||
+                     clip->animScaleX().hasKeyframeAt(offset, 15);
+        if (hasKf) {
+            QAction *delKf = menu.addAction("Eliminar fotograma clave de transformación aquí");
+            connect(delKf, &QAction::triggered, this, [this, clip, offset]() {
+                clip->animPosition().removeKeyframeAt(offset, 15);
+                clip->animRotation().removeKeyframeAt(offset, 15);
+                clip->animScaleX().removeKeyframeAt(offset, 15);
+                clip->animScaleY().removeKeyframeAt(offset, 15);
+                emit clipTransformChanged(clip->id());
+                update();
+            });
+        } else {
+            QAction *addKf = menu.addAction("Insertar fotograma clave de transformación aquí");
+            connect(addKf, &QAction::triggered, this, [this, clip, offset]() {
+                clip->animPosition().setKeyframe(offset, clip->positionAt(m_currentPositionMs));
+                clip->animRotation().setKeyframe(offset, clip->rotationAt(m_currentPositionMs));
+                clip->animScaleX().setKeyframe(offset, clip->scaleXAt(m_currentPositionMs));
+                clip->animScaleY().setKeyframe(offset, clip->scaleYAt(m_currentPositionMs));
+                emit clipTransformChanged(clip->id());
+                update();
+            });
+        }
+
+        if (clip->animPosition().isAnimated() || clip->animRotation().isAnimated() || clip->animScaleX().isAnimated()) {
+            QAction *clearAnim = menu.addAction("Limpiar animaciones de transformación");
+            connect(clearAnim, &QAction::triggered, this, [this, clip]() {
+                clip->animPosition().clearKeyframes();
+                clip->animRotation().clearKeyframes();
+                clip->animScaleX().clearKeyframes();
+                clip->animScaleY().clearKeyframes();
+                emit clipTransformChanged(clip->id());
+                update();
+            });
+        }
+    }
+
+    menu.addSeparator();
+    QAction *autoKfAction = menu.addAction("Auto-Keyframe");
+    autoKfAction->setCheckable(true);
+    autoKfAction->setChecked(m_autoKeyframe);
+    connect(autoKfAction, &QAction::toggled, this, [this](bool checked) {
+        setAutoKeyframe(checked);
+    });
+
+    menu.addSeparator();
+    QAction *centerAction = menu.addAction("Centrar en el lienzo");
+    connect(centerAction, &QAction::triggered, this, [this, clip, offset, inRange]() {
+        clip->setPosX(0.0f);
+        clip->setPosY(0.0f);
+        if (inRange && (m_autoKeyframe || clip->animPosition().isAnimated())) {
+            clip->animPosition().setKeyframe(offset, QPointF(0.0, 0.0));
+        }
+        emit clipTransformChanged(clip->id());
+        update();
+    });
+
+    QAction *resetAction = menu.addAction("Restablecer transformación (100%, 0°, Centro)");
+    connect(resetAction, &QAction::triggered, this, [this, clip, offset, inRange]() {
+        clip->setPosX(0.0f);
+        clip->setPosY(0.0f);
+        clip->setScaleX(1.0f);
+        clip->setScaleY(1.0f);
+        clip->setRotation(0.0f);
+        if (inRange && (m_autoKeyframe || clip->animPosition().isAnimated())) {
+            clip->animPosition().setKeyframe(offset, QPointF(0.0, 0.0));
+            clip->animScaleX().setKeyframe(offset, 1.0f);
+            clip->animScaleY().setKeyframe(offset, 1.0f);
+            clip->animRotation().setKeyframe(offset, 0.0f);
+        }
+        emit clipTransformChanged(clip->id());
+        update();
+    });
+
+    menu.exec(event->globalPos());
 }
 
 void MonitorWidget::dragEnterEvent(QDragEnterEvent *event)
@@ -1341,7 +1867,69 @@ PreviewWidget::PreviewWidget(TimelineModel *model, AudioEngine *audioEngine, QWi
     transportLayout->addWidget(m_stepForwardBtn);
     transportLayout->addWidget(m_jumpEndBtn);
 
+    m_autoKeyframeBtn = new QPushButton("◆ Auto", this);
+    m_autoKeyframeBtn->setCheckable(true);
+    m_autoKeyframeBtn->setChecked(false);
+    m_autoKeyframeBtn->setToolTip("Auto-Keyframe: Generar o actualizar fotogramas clave al mover o rotar en el visor");
+    m_autoKeyframeBtn->setCursor(Qt::PointingHandCursor);
+    m_autoKeyframeBtn->setStyleSheet(
+        "QPushButton {"
+        "  background-color: #21262d; color: #8b949e; border: 1px solid #30363d; border-radius: 4px; font-weight: bold; font-size: 11px; padding: 2px 8px; min-width: 50px; min-height: 24px;"
+        "}"
+        "QPushButton:hover { background-color: #30363d; color: #e6edf3; }"
+        "QPushButton:checked { background-color: #f1e05a; color: #0d1117; border-color: #d29922; }"
+    );
+    connect(m_autoKeyframeBtn, &QPushButton::toggled, this, [this](bool checked) {
+        if (m_monitorWidget) {
+            m_monitorWidget->setAutoKeyframe(checked);
+        }
+    });
+    transportLayout->addWidget(m_autoKeyframeBtn);
+
     transportLayout->addStretch();
+
+    // Preview Quality / Resolution selector
+    m_resolutionCombo = new QComboBox(this);
+    m_resolutionCombo->setToolTip("Resolución de previsualización en el monitor (Optimización de RAM)");
+    m_resolutionCombo->addItem("100% Completa", static_cast<int>(PreviewResolution::Full));
+    m_resolutionCombo->addItem("50% Media", static_cast<int>(PreviewResolution::Half));
+    m_resolutionCombo->addItem("25% Cuarto", static_cast<int>(PreviewResolution::Quarter));
+    m_resolutionCombo->addItem("12.5% Borrador", static_cast<int>(PreviewResolution::Draft));
+    int curResIdx = m_resolutionCombo->findData(static_cast<int>(GpuAccelerationManager::instance().previewResolution()));
+    if (curResIdx >= 0) m_resolutionCombo->setCurrentIndex(curResIdx);
+    m_resolutionCombo->setStyleSheet(
+        "QComboBox { background-color: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: bold; min-height: 22px; }"
+        "QComboBox::drop-down { border: none; }"
+        "QComboBox QAbstractItemView { background-color: #161b22; color: #c9d1d9; selection-background-color: #1f6feb; selection-color: white; }"
+    );
+    connect(m_resolutionCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &PreviewWidget::onResolutionComboChanged);
+    transportLayout->addWidget(m_resolutionCombo);
+
+    // Performance & GPU dialog button
+    m_perfSettingsBtn = new QPushButton("⚙️ GPU", this);
+    m_perfSettingsBtn->setToolTip("Configuración de Aceleración por GPU y Límites de Memoria RAM");
+    m_perfSettingsBtn->setCursor(Qt::PointingHandCursor);
+    m_perfSettingsBtn->setStyleSheet(
+        "QPushButton { background-color: #21262d; color: #7ee787; border: 1px solid #30363d; border-radius: 4px; font-size: 11px; font-weight: bold; padding: 2px 8px; min-height: 22px; }"
+        "QPushButton:hover { background-color: #30363d; color: #a6e3a1; border-color: #2ea043; }"
+        "QPushButton:pressed { background-color: #161b22; }"
+    );
+    connect(m_perfSettingsBtn, &QPushButton::clicked, this, &PreviewWidget::openPerformanceDialog);
+    transportLayout->addWidget(m_perfSettingsBtn);
+
+    connect(&GpuAccelerationManager::instance(), &GpuAccelerationManager::previewResolutionChanged, this, [this](PreviewResolution res) {
+        int idx = m_resolutionCombo->findData(static_cast<int>(res));
+        if (idx >= 0 && m_resolutionCombo->currentIndex() != idx) {
+            m_resolutionCombo->blockSignals(true);
+            m_resolutionCombo->setCurrentIndex(idx);
+            m_resolutionCombo->blockSignals(false);
+        }
+        renderCurrentFrame();
+    });
+
+    connect(&GpuAccelerationManager::instance(), &GpuAccelerationManager::gpuRenderingChanged, this, [this](bool) {
+        renderCurrentFrame();
+    });
 
     // Volume slider
     QLabel *volIcon = new QLabel("🔊", this);
@@ -1392,8 +1980,14 @@ PreviewWidget::~PreviewWidget()
 
 void PreviewWidget::updatePreview()
 {
-    renderCurrentFrame();
-    updateTimecodeLabel();
+    if (!m_updatePreviewPending) {
+        m_updatePreviewPending = true;
+        QTimer::singleShot(0, this, [this]() {
+            m_updatePreviewPending = false;
+            renderCurrentFrame();
+            updateTimecodeLabel();
+        });
+    }
 }
 
 void PreviewWidget::setPosition(qint64 positionMs)
@@ -1592,10 +2186,10 @@ void PreviewWidget::renderCurrentFrame()
     if (!m_monitorWidget) return;
 
     QSize canvasBase = m_model ? m_model->canvasSize() : QSize(1920, 1080);
-    QSize targetPreviewSize = canvasBase.scaled(1280, 720, Qt::KeepAspectRatio);
+    QSize targetPreviewSize = GpuAccelerationManager::instance().calculatePreviewSize(canvasBase);
 
     // Render composited frame from model
-    QImage frame = VideoCompositor::renderFrame(m_model, m_currentPositionMs, targetPreviewSize);
+    QImage frame = VideoCompositor::renderFrame(m_model, m_currentPositionMs, targetPreviewSize, /*forPreview=*/true);
     if (frame.isNull()) {
         frame = QImage(targetPreviewSize, QImage::Format_RGB32);
         frame.fill(Qt::black);
@@ -1603,6 +2197,23 @@ void PreviewWidget::renderCurrentFrame()
 
     m_monitorWidget->setCurrentPositionMs(m_currentPositionMs);
     m_monitorWidget->setFrame(frame);
+    emit frameRendered(frame);
+}
+
+void PreviewWidget::onResolutionComboChanged(int index)
+{
+    if (index < 0 || !m_resolutionCombo) return;
+    int data = m_resolutionCombo->itemData(index).toInt();
+    GpuAccelerationManager::instance().setPreviewResolution(static_cast<PreviewResolution>(data));
+    renderCurrentFrame();
+}
+
+void PreviewWidget::openPerformanceDialog()
+{
+    GpuSettingsDialog dlg(this);
+    if (dlg.exec() == QDialog::Accepted) {
+        renderCurrentFrame();
+    }
 }
 
 void PreviewWidget::updateTimecodeLabel()

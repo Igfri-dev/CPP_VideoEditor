@@ -14,6 +14,13 @@
 #include <QToolTip>
 #include <QInputDialog>
 #include <QColorDialog>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDoubleSpinBox>
+#include <QFormLayout>
+#include <QVBoxLayout>
+#include <QLabel>
+#include <QPushButton>
 #include <QLinearGradient>
 #include <QtMath>
 #include <algorithm>
@@ -274,6 +281,15 @@ void TimelineWidget::addAudioTrack()
     }
 }
 
+void TimelineWidget::addAdjustmentTrack()
+{
+    if (m_model) {
+        m_model->addTrack(TrackType::Adjustment);
+        updateScrollBars();
+        update();
+    }
+}
+
 qint64 TimelineWidget::pixelToTimeMs(int x) const
 {
     int adjustedX = x - trackHeaderWidth() + m_scrollX;
@@ -379,7 +395,9 @@ void TimelineWidget::invalidateFilmstripCache(qint64 clipId)
 
 void TimelineWidget::onModelChanged()
 {
-    invalidateFilmstripCache();
+    // Do NOT clear m_filmstripCache here. FilmstripCacheItem already validates
+    // width, height, sourceInMs, durationMs, and speed. Wiping cache on visual
+    // property changes forced synchronous re-decoding of dozens of video frames on the GUI thread, freezing the UI.
     updateScrollBars();
     update();
 }
@@ -606,12 +624,18 @@ void TimelineWidget::paintEvent(QPaintEvent *event)
             if (tRect.bottom() >= rulerHeight() && tRect.top() <= height()) {
                 // Track header
                 QRect hRect(0, y, trackHeaderWidth(), trackHeight());
-                p.fillRect(hRect, QColor("#1a202c"));
-                p.setPen(QColor("#30363d"));
+                p.fillRect(hRect, track.type() == TrackType::Adjustment ? QColor("#1e172a") : QColor("#1a202c"));
+                p.setPen(track.type() == TrackType::Adjustment ? QColor("#4c3266") : QColor("#30363d"));
                 p.drawRect(hRect);
 
                 // Track name
-                p.setPen(track.type() == TrackType::Video ? QColor("#58a6ff") : QColor("#d29922"));
+                QColor titleCol = QColor("#58a6ff");
+                if (track.type() == TrackType::Adjustment) {
+                    titleCol = QColor("#bc8cff");
+                } else if (track.type() == TrackType::Audio) {
+                    titleCol = QColor("#d29922");
+                }
+                p.setPen(titleCol);
                 QFont tf = p.font();
                 tf.setBold(true);
                 tf.setPixelSize(12);
@@ -628,10 +652,11 @@ void TimelineWidget::paintEvent(QPaintEvent *event)
                 bf.setPixelSize(10);
                 p.setFont(bf);
 
-                if (track.type() == TrackType::Video) {
+                if (track.type() == TrackType::Video || track.type() == TrackType::Adjustment) {
                     // Eye / Visibility Button
                     QRect eyeBtn(8, y + 26, 44, 20);
-                    p.setBrush(track.isVisible() ? QColor("#238636") : QColor("#21262d"));
+                    QColor eyeActive = (track.type() == TrackType::Adjustment) ? QColor("#8957e5") : QColor("#238636");
+                    p.setBrush(track.isVisible() ? eyeActive : QColor("#21262d"));
                     p.setPen(QColor("#30363d"));
                     p.drawRoundedRect(eyeBtn, 3, 3);
                     p.setPen(track.isVisible() ? Qt::white : QColor("#8b949e"));
@@ -672,8 +697,8 @@ void TimelineWidget::paintEvent(QPaintEvent *event)
 
                 // Track lane
                 QRect lRect(trackHeaderWidth(), y, width() - trackHeaderWidth() - vScrollW, trackHeight());
-                p.fillRect(lRect, QColor("#161b22"));
-                p.setPen(QColor("#21262d"));
+                p.fillRect(lRect, track.type() == TrackType::Adjustment ? QColor("#181324") : QColor("#161b22"));
+                p.setPen(track.type() == TrackType::Adjustment ? QColor("#28203d") : QColor("#21262d"));
                 p.drawRect(lRect);
 
                 // Draw Clips in this track
@@ -692,6 +717,17 @@ void TimelineWidget::paintEvent(QPaintEvent *event)
                     p.setPen(isSelected ? QPen(QColor("#ffdf5d"), 2) : QPen(QColor("#11161f"), 1));
                     p.drawRoundedRect(cRect, 4, 4);
 
+                    // Distinctive visual pattern/accent for Adjustment Layers
+                    if (clip.type() == ClipType::Adjustment) {
+                        QRect topStrip(cRect.left() + 2, cRect.top() + 1, cRect.width() - 4, 4);
+                        p.fillRect(topStrip, QColor("#e8d5ff"));
+                        QPen hatchPen(QColor(255, 255, 255, 30), 1);
+                        p.setPen(hatchPen);
+                        for (int hx = cRect.left() + 8; hx < cRect.right(); hx += 14) {
+                            p.drawLine(hx, cRect.top() + 6, hx - 8, cRect.bottom() - 2);
+                        }
+                    }
+
                     // Video & Image Filmstrip Thumbnails
                     if ((clip.type() == ClipType::Video || clip.type() == ClipType::Image) && !clip.filePath().isEmpty()) {
                         int thumbW = 56;
@@ -708,13 +744,13 @@ void TimelineWidget::paintEvent(QPaintEvent *event)
                             if (cacheValid) {
                                 p.drawPixmap(cRect.left(), cRect.top() + 2, it->pixmap);
                             } else if (!m_isPlaying) {
-                                int numThumbs = qBound(1, cRect.width() / thumbW, 20);
+                                int numThumbs = qBound(1, cRect.width() / 140, 5);
                                 QPixmap stripPix(cRect.width(), thumbH);
                                 stripPix.fill(Qt::transparent);
                                 QPainter sp(&stripPix);
 
                                 for (int ti = 0; ti < numThumbs; ++ti) {
-                                    int tx = ti * thumbW;
+                                    int tx = ti * (cRect.width() / numThumbs);
                                     double progress = (numThumbs > 1) ? static_cast<double>(ti) / (numThumbs - 1) : 0.0;
                                     qint64 frameSourceMs = clip.sourceInMs() + qRound64(progress * clip.durationMs() * clip.speed());
 
@@ -798,6 +834,12 @@ void TimelineWidget::paintEvent(QPaintEvent *event)
                         label = "🖼️ " + label;
                     } else if (clip.type() == ClipType::Text) {
                         label = "🔤 " + label;
+                    } else if (clip.type() == ClipType::Adjustment) {
+                        label = "✨ " + label;
+                    } else if (clip.type() == ClipType::Compound) {
+                        label = "📦 " + label;
+                    } else if (clip.type() == ClipType::SolidColor) {
+                        label = "🎨 " + label;
                     }
                     if (clip.isLinked()) {
                         label = "🔗 " + label;
@@ -817,7 +859,55 @@ void TimelineWidget::paintEvent(QPaintEvent *event)
                     if (qAbs(clip.scaleX() - 1.0) > 0.05 || qAbs(clip.rotation()) > 1.0 || qAbs(clip.posX()) > 5.0 || qAbs(clip.posY()) > 5.0) {
                         label += " 📐";
                     }
+                    if (clip.hasKeyframes()) {
+                        label += " ◆";
+                    }
                     p.drawText(cRect.adjusted(6, 4, -6, -4), Qt::AlignTop | Qt::AlignLeft, label);
+
+                    // Right-aligned time interval badge on clip e.g. [1.0s - 10.0s]
+                    if (cRect.width() >= 110) {
+                        double inS = clip.timelineInMs() / 1000.0;
+                        double outS = clip.timelineOutMs() / 1000.0;
+                        QString timeSpan = QString("[%1s - %2s]").arg(inS, 0, 'f', 1).arg(outS, 0, 'f', 1);
+                        QFont tsf = p.font();
+                        tsf.setBold(false);
+                        tsf.setPixelSize(9);
+                        p.setFont(tsf);
+                        p.setPen(QColor(255, 255, 255, 190));
+                        p.drawText(cRect.adjusted(6, 4, -8, -4), Qt::AlignTop | Qt::AlignRight, timeSpan);
+                        p.setFont(cf);
+                    }
+
+                    // Draw visual keyframe diamonds on clip
+                    if (clip.hasKeyframes()) {
+                        QSet<qint64> kfTimes;
+                        auto addTimes = [&kfTimes](const auto &anim) {
+                            for (const auto &kf : anim.keyframes()) {
+                                kfTimes.insert(kf.timeMs);
+                            }
+                        };
+                        addTimes(clip.animTimeOfDay());
+                        addTimes(clip.animOpacity());
+                        addTimes(clip.animVolume());
+                        addTimes(clip.animScaleX());
+                        addTimes(clip.animRotation());
+                        addTimes(clip.animPosition());
+
+                        int kfY = cRect.bottom() - 6;
+                        p.setPen(QPen(QColor("#0d1117"), 1));
+                        p.setBrush(QColor("#58a6ff"));
+                        for (qint64 kfMs : kfTimes) {
+                            int kfX = cRect.left() + timeMsToPixel(kfMs);
+                            if (kfX >= cRect.left() && kfX <= cRect.right()) {
+                                QPolygon diamond;
+                                diamond << QPoint(kfX, kfY - 4)
+                                        << QPoint(kfX + 4, kfY)
+                                        << QPoint(kfX, kfY + 4)
+                                        << QPoint(kfX - 4, kfY);
+                                p.drawPolygon(diamond);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -978,7 +1068,7 @@ void TimelineWidget::mousePressEvent(QMouseEvent *event)
             int lx = event->pos().x();
             int ly = event->pos().y();
 
-            if (track->type() == TrackType::Video) {
+            if (track->type() == TrackType::Video || track->type() == TrackType::Adjustment) {
                 QRect eyeBtn(8, tRect.top() + 26, 44, 20);
                 QRect lockBtn(56, tRect.top() + 26, 44, 20);
                 if (eyeBtn.contains(lx, ly)) {
@@ -1064,7 +1154,8 @@ void TimelineWidget::mousePressEvent(QMouseEvent *event)
             if (!m_selectedClipIds.contains(hit.clipId)) {
                 selectClip(hit.clipId, false);
             }
-            showClipContextMenu(hit.clipId, event->globalPosition().toPoint());
+            qint64 clickTimeMs = pixelToTimeMs(event->pos().x());
+            showClipContextMenu(hit.clipId, event->globalPosition().toPoint(), clickTimeMs);
             return;
         }
 
@@ -1078,6 +1169,16 @@ void TimelineWidget::mousePressEvent(QMouseEvent *event)
 
         TimelineClip *clip = m_model->findClip(hit.clipId);
         if (clip) {
+            // If playhead is outside the selected clip, move playhead inside so the user can see what they're editing
+            if (!hit.isLeftEdge && !hit.isRightEdge) {
+                if (m_playheadPositionMs < clip->timelineInMs() || m_playheadPositionMs >= clip->timelineOutMs()) {
+                    qint64 clickTimeMs = pixelToTimeMs(event->pos().x());
+                    qint64 targetMs = qBound(clip->timelineInMs(), clickTimeMs, qMax(clip->timelineInMs(), clip->timelineOutMs() - 1));
+                    setPlayheadPosition(targetMs);
+                    emit playheadSeekRequested(targetMs);
+                }
+            }
+
             m_dragClipId = hit.clipId;
             m_dragTrackId = hit.trackId;
             m_dragInitialTimelineInMs = clip->timelineInMs();
@@ -1475,18 +1576,123 @@ void TimelineWidget::populateEffectsMenu(QMenu *parentMenu, const std::function<
     }
 }
 
-void TimelineWidget::showClipContextMenu(qint64 clipId, const QPoint &globalPos)
+void TimelineWidget::showChangeTimingDialog(qint64 clipId)
+{
+    if (!m_model) return;
+    TimelineClip *clip = m_model->findClip(clipId);
+    if (!clip) return;
+
+    QDialog dlg(this);
+    dlg.setWindowTitle("⏱️ Intervalo de Tiempo y Duración");
+    dlg.setStyleSheet("background-color: #161b22; color: #c9d1d9; font-size: 12px;");
+    QVBoxLayout *layout = new QVBoxLayout(&dlg);
+    layout->setSpacing(10);
+
+    QLabel *hdr = new QLabel(QString("<b>Clip:</b> %1 (%2)").arg(clip->name(), clipTypeToString(clip->type())), &dlg);
+    hdr->setStyleSheet("color: #58a6ff; font-size: 13px;");
+    layout->addWidget(hdr);
+
+    QFormLayout *form = new QFormLayout();
+    form->setSpacing(8);
+
+    QDoubleSpinBox *inSpin = new QDoubleSpinBox(&dlg);
+    inSpin->setRange(0.0, 99999.0);
+    inSpin->setDecimals(2);
+    inSpin->setSingleStep(0.1);
+    inSpin->setSuffix(" s");
+    inSpin->setValue(clip->timelineInMs() / 1000.0);
+    inSpin->setStyleSheet("background-color: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 3px;");
+
+    QDoubleSpinBox *outSpin = new QDoubleSpinBox(&dlg);
+    outSpin->setRange(0.0, 99999.0);
+    outSpin->setDecimals(2);
+    outSpin->setSingleStep(0.1);
+    outSpin->setSuffix(" s");
+    outSpin->setValue(clip->timelineOutMs() / 1000.0);
+    outSpin->setStyleSheet("background-color: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 3px;");
+
+    QDoubleSpinBox *durSpin = new QDoubleSpinBox(&dlg);
+    durSpin->setRange(0.1, 99999.0);
+    durSpin->setDecimals(2);
+    durSpin->setSingleStep(0.1);
+    durSpin->setSuffix(" s");
+    durSpin->setValue(clip->durationMs() / 1000.0);
+    durSpin->setStyleSheet("background-color: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 3px;");
+
+    bool updating = false;
+    connect(inSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [&]() {
+        if (updating) return;
+        updating = true;
+        outSpin->setValue(inSpin->value() + durSpin->value());
+        updating = false;
+    });
+    connect(durSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [&]() {
+        if (updating) return;
+        updating = true;
+        outSpin->setValue(inSpin->value() + durSpin->value());
+        updating = false;
+    });
+    connect(outSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [&]() {
+        if (updating) return;
+        updating = true;
+        if (outSpin->value() > inSpin->value() + 0.05) {
+            durSpin->setValue(outSpin->value() - inSpin->value());
+        }
+        updating = false;
+    });
+
+    form->addRow("Segundo de Inicio:", inSpin);
+    form->addRow("Segundo de Fin:", outSpin);
+    form->addRow("Duración:", durSpin);
+    layout->addLayout(form);
+
+    QDialogButtonBox *btnBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    btnBox->button(QDialogButtonBox::Ok)->setText("Aplicar");
+    btnBox->button(QDialogButtonBox::Cancel)->setText("Cancelar");
+    btnBox->setStyleSheet(
+        "QPushButton { background-color: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 5px 12px; }"
+        "QPushButton:hover { background-color: #30363d; color: #ffffff; }"
+    );
+    connect(btnBox, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(btnBox, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    layout->addWidget(btnBox);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        qint64 newIn = qRound64(inSpin->value() * 1000.0);
+        qint64 newOut = qRound64(outSpin->value() * 1000.0);
+        if (newOut > newIn + 50) {
+            clip->setTimelineInMs(newIn);
+            clip->setTimelineOutMs(newOut);
+            bool isSynthetic = (clip->type() == ClipType::Adjustment || 
+                                clip->type() == ClipType::Text || 
+                                clip->type() == ClipType::SolidColor);
+            if (isSynthetic) {
+                clip->setSourceDurationMs(clip->durationMs());
+                clip->setSourceOutMs(clip->durationMs());
+            }
+            if (TimelineTrack *t = m_model->findTrackForClip(clipId)) {
+                t->sortClips();
+            }
+            m_model->notifyChange();
+            emit clipSelected(clipId);
+            update();
+        }
+    }
+}
+
+void TimelineWidget::showClipContextMenu(qint64 clipId, const QPoint &globalPos, qint64 clickTimeMs)
 {
     TimelineClip *clip = m_model->findClip(clipId);
     if (!clip) return;
 
     QMenu menu(this);
     menu.setStyleSheet(
-        "QMenu { background-color: #161b22; color: #c9d1d9; border: 1px solid #30363d; }"
+        "QMenu { background-color: #161b22; color: #c9d1d9; border: 1px solid #30363d; padding: 4px; }"
         "QMenu::item:selected { background-color: #1f293d; color: #58a6ff; }"
     );
 
     if (m_selectedClipIds.size() >= 2) {
+        QAction *actCompound = menu.addAction("📦 Crear Clip Compuesto");
         QAction *actJoin = menu.addAction("🔗 Unir clips seleccionados (Ctrl+J)");
         QAction *actSplit = menu.addAction("✂ Cortar clips seleccionados (Ctrl+K)");
 
@@ -1503,7 +1709,46 @@ void TimelineWidget::showClipContextMenu(qint64 clipId, const QPoint &globalPos)
         QAction *selected = menu.exec(globalPos);
         if (!selected) return;
 
-        if (selected == actJoin) {
+        if (selected == actCompound) {
+            std::shared_ptr<TimelineModel> subTimeline = std::make_shared<TimelineModel>();
+            qint64 subTrackId = subTimeline->addTrack(TrackType::Video, "Pista Anidada 1");
+            qint64 minIn = std::numeric_limits<qint64>::max();
+            qint64 maxOut = 0;
+            qint64 firstTrackId = -1;
+
+            for (qint64 cid : m_selectedClipIds) {
+                if (TimelineClip *c = m_model->findClip(cid)) {
+                    minIn = qMin(minIn, c->timelineInMs());
+                    maxOut = qMax(maxOut, c->timelineOutMs());
+                    if (firstTrackId < 0) {
+                        if (TimelineTrack *t = m_model->findTrackForClip(cid)) {
+                            firstTrackId = t->id();
+                        }
+                    }
+                    TimelineClip copyClip = *c;
+                    subTimeline->addClip(copyClip, subTrackId);
+                }
+            }
+            if (firstTrackId < 0 && !m_model->videoTracks().isEmpty()) {
+                firstTrackId = m_model->videoTracks().first().id();
+            }
+            for (qint64 cid : m_selectedClipIds) {
+                m_model->deleteClip(cid);
+            }
+            TimelineClip compound;
+            compound.setType(ClipType::Compound);
+            compound.setName("Clip Compuesto Anidado");
+            compound.setTimelineInMs(minIn);
+            compound.setTimelineOutMs(maxOut);
+            compound.setSourceInMs(0);
+            compound.setSourceOutMs(maxOut - minIn);
+            compound.setColor(QColor("#1f6feb"));
+            compound.setSubTimeline(subTimeline);
+            qint64 newId = m_model->addClip(compound, firstTrackId);
+            setSelectedClipId(newId);
+            emit clipSelected(newId);
+            update();
+        } else if (selected == actJoin) {
             joinSelectedClips();
         } else if (selected == actSplit) {
             splitSelectedClips();
@@ -1515,13 +1760,60 @@ void TimelineWidget::showClipContextMenu(qint64 clipId, const QPoint &globalPos)
         return;
     }
 
-    QAction *actSeparateAudio = nullptr;
-    if (clip->type() == ClipType::Video || clip->isLinked()) {
-        actSeparateAudio = menu.addAction("Separar Audio de Video");
+    // Header displaying clip type, name and time range
+    double durSec = clip->durationMs() / 1000.0;
+    double inSec = clip->timelineInMs() / 1000.0;
+    double outSec = clip->timelineOutMs() / 1000.0;
+    QString iconPrefix = "🎬";
+    if (clip->type() == ClipType::Adjustment) iconPrefix = "✨";
+    else if (clip->type() == ClipType::Audio) iconPrefix = "🎵";
+    else if (clip->type() == ClipType::Text) iconPrefix = "🔤";
+    else if (clip->type() == ClipType::SolidColor) iconPrefix = "🎨";
+    else if (clip->type() == ClipType::Compound) iconPrefix = "📦";
+
+    QAction *headerAct = menu.addAction(QString("%1 %2 • [%3s - %4s] (%5s)")
+                                           .arg(iconPrefix, clip->name())
+                                           .arg(inSec, 0, 'f', 1)
+                                           .arg(outSec, 0, 'f', 1)
+                                           .arg(durSec, 0, 'f', 1));
+    headerAct->setEnabled(false);
+    menu.addSeparator();
+
+    // Cutting / Splitting options
+    QAction *actSplitAtCursor = nullptr;
+    if (clickTimeMs > clip->timelineInMs() + 50 && clickTimeMs < clip->timelineOutMs() - 50) {
+        actSplitAtCursor = menu.addAction(QString("✂️ Cortar aquí en el cursor (%1s)").arg(clickTimeMs / 1000.0, 0, 'f', 2));
     }
 
-    QAction *actSplit = menu.addAction("Cortar en el cabezal (Split) (Ctrl+K)");
-    QAction *actDuplicate = menu.addAction("Duplicar clip (Ctrl+D)");
+    QAction *actSplitAtPlayhead = menu.addAction(QString("✂️ Cortar en el cabezal (%1s) (Ctrl+K)").arg(m_playheadPositionMs / 1000.0, 0, 'f', 2));
+    if (m_playheadPositionMs <= clip->timelineInMs() + 50 || m_playheadPositionMs >= clip->timelineOutMs() - 50) {
+        actSplitAtPlayhead->setEnabled(false);
+    }
+
+    QAction *actDuplicate = menu.addAction("📄 Duplicar clip (Ctrl+D)");
+    QAction *actTiming = menu.addAction("⏱️ Cambiar Tiempo y Duración (Inicio, Fin)...");
+
+    menu.addSeparator();
+
+    QAction *actSeparateAudio = nullptr;
+    if (clip->type() == ClipType::Video || clip->isLinked()) {
+        actSeparateAudio = menu.addAction("🎵 Separar Audio de Video");
+    }
+
+    QAction *actToggleAudioMute = nullptr;
+    if (clip->type() == ClipType::Audio) {
+        actToggleAudioMute = menu.addAction(clip->isAudioMuted() ? "🔊 Activar Audio del Clip" : "🔇 Silenciar Audio del Clip");
+    }
+
+    QAction *actChangeColor = nullptr;
+    if (clip->type() == ClipType::Adjustment || clip->type() == ClipType::SolidColor) {
+        actChangeColor = menu.addAction("🎨 Cambiar Color de la Capa...");
+    }
+
+    QAction *actDecompose = nullptr;
+    if (clip->type() == ClipType::Compound) {
+        actDecompose = menu.addAction("📦 Descomponer Clip Compuesto");
+    }
 
     QMenu *effectsMenu = menu.addMenu("✨ Aplicar Efecto Visual");
     effectsMenu->setStyleSheet(menu.styleSheet());
@@ -1533,18 +1825,66 @@ void TimelineWidget::showClipContextMenu(qint64 clipId, const QPoint &globalPos)
     });
 
     menu.addSeparator();
-    QAction *actDelete = menu.addAction("Eliminar clip (Supr)");
-    QAction *actRippleDelete = menu.addAction("Eliminar con rizado (Ripple Delete) (Shift+Supr)");
+    QAction *actDelete = menu.addAction("🗑️ Eliminar clip (Supr)");
+    QAction *actRippleDelete = menu.addAction("⏪ Eliminar con rizado (Ripple Delete) (Shift+Supr)");
 
     QAction *selected = menu.exec(globalPos);
     if (!selected) return;
 
-    if (selected == actSeparateAudio) {
-        m_model->separateAudio(clipId);
-    } else if (selected == actSplit) {
+    if (actSplitAtCursor && selected == actSplitAtCursor) {
+        m_model->splitClip(clipId, clickTimeMs);
+        update();
+    } else if (selected == actSplitAtPlayhead) {
         m_model->splitClip(clipId, m_playheadPositionMs);
+        update();
     } else if (selected == actDuplicate) {
         m_model->duplicateClip(clipId);
+        update();
+    } else if (selected == actTiming) {
+        showChangeTimingDialog(clipId);
+    } else if (selected == actSeparateAudio) {
+        m_model->separateAudio(clipId);
+        update();
+    } else if (actToggleAudioMute && selected == actToggleAudioMute) {
+        clip->setAudioMuted(!clip->isAudioMuted());
+        m_model->notifyChange();
+        update();
+    } else if (actChangeColor && selected == actChangeColor) {
+        QColor chosen = QColorDialog::getColor(clip->color(), this, "Seleccionar Color de la Capa");
+        if (chosen.isValid()) {
+            clip->setColor(chosen);
+            if (clip->type() == ClipType::SolidColor) {
+                clip->setBackgroundColor(chosen);
+            }
+            m_model->notifyChange();
+            update();
+        }
+    } else if (actDecompose && selected == actDecompose) {
+        if (clip->subTimeline()) {
+            TimelineTrack *track = m_model->findTrackForClip(clip->id());
+            qint64 trackId = track ? track->id() : (m_model->videoTracks().isEmpty() ? -1 : m_model->videoTracks().first().id());
+            std::shared_ptr<TimelineModel> sub = clip->subTimeline();
+            qint64 baseTimelineIn = clip->timelineInMs();
+
+            for (const TimelineTrack &st : sub->videoTracks()) {
+                for (const TimelineClip &sc : st.clips()) {
+                    TimelineClip restored = sc;
+                    restored.setTimelineInMs(baseTimelineIn + sc.timelineInMs());
+                    restored.setTimelineOutMs(baseTimelineIn + sc.timelineOutMs());
+                    m_model->addClip(restored, trackId);
+                }
+            }
+            for (const TimelineTrack &st : sub->audioTracks()) {
+                for (const TimelineClip &sc : st.clips()) {
+                    TimelineClip restored = sc;
+                    restored.setTimelineInMs(baseTimelineIn + sc.timelineInMs());
+                    restored.setTimelineOutMs(baseTimelineIn + sc.timelineOutMs());
+                    m_model->addClip(restored, trackId);
+                }
+            }
+            m_model->deleteClip(clip->id());
+            update();
+        }
     } else if (selected == actDelete) {
         deleteSelectedClip(false);
     } else if (selected == actRippleDelete) {
@@ -1596,26 +1936,70 @@ void TimelineWidget::showEmptyContextMenu(qint64 trackId, qint64 timelineMs, con
 {
     QMenu menu(this);
     menu.setStyleSheet(
-        "QMenu { background-color: #161b22; color: #c9d1d9; border: 1px solid #30363d; }"
+        "QMenu { background-color: #161b22; color: #c9d1d9; border: 1px solid #30363d; padding: 4px; }"
         "QMenu::item:selected { background-color: #1f293d; color: #58a6ff; }"
     );
 
+    double sec = timelineMs / 1000.0;
+    QAction *headerAct = menu.addAction(QString("📍 Posición: %1s").arg(sec, 0, 'f', 2));
+    headerAct->setEnabled(false);
+    menu.addSeparator();
+
+    QAction *actAddAdj = menu.addAction("✨ Añadir Capa de Ajuste aquí (5s)");
+    QAction *actAddSolid = menu.addAction("🎨 Añadir Clip de Color Sólido aquí...");
     QAction *actAddText = menu.addAction("🔤 Añadir Cuadro de Texto aquí (Ctrl+T)");
     menu.addSeparator();
-    QAction *actAddVideoTrack = menu.addAction("+ Añadir Pista de Video");
-    QAction *actAddAudioTrack = menu.addAction("+ Añadir Pista de Audio");
+    QAction *actAddAdjTrack = menu.addAction("✨ Añadir Pista de Ajuste Arriba");
+    QAction *actAddVideoTrack = menu.addAction("➕ Añadir Pista de Video Arriba");
+    QAction *actAddAudioTrack = menu.addAction("➕ Añadir Pista de Audio Abajo");
 
     QAction *selected = menu.exec(globalPos);
     if (!selected) return;
 
-    if (selected == actAddText) {
+    if (selected == actAddAdj) {
+        if (m_model) {
+            qint64 newId = m_model->addAdjustmentClip(timelineMs, 5000, trackId);
+            if (newId > 0) {
+                TimelineClip *c = m_model->findClip(newId);
+                qint64 targetMs = c ? c->timelineInMs() : timelineMs;
+                setSelectedClipId(newId);
+                emit clipSelected(newId);
+                setPlayheadPosition(targetMs);
+                emit playheadSeekRequested(targetMs);
+                update();
+            }
+        }
+    } else if (selected == actAddSolid) {
+        if (m_model) {
+            QColor chosen = QColorDialog::getColor(QColor("#1f6feb"), this, "Seleccionar Color Sólido");
+            if (chosen.isValid()) {
+                qint64 newId = m_model->addSolidColorClip(chosen, timelineMs, 5000, trackId);
+                if (newId > 0) {
+                    TimelineClip *c = m_model->findClip(newId);
+                    qint64 targetMs = c ? c->timelineInMs() : timelineMs;
+                    setSelectedClipId(newId);
+                    emit clipSelected(newId);
+                    setPlayheadPosition(targetMs);
+                    emit playheadSeekRequested(targetMs);
+                    update();
+                }
+            }
+        }
+    } else if (selected == actAddText) {
         if (m_model) {
             qint64 newId = m_model->addTextClip("Texto de ejemplo", timelineMs, 5000, trackId);
             if (newId > 0) {
+                TimelineClip *c = m_model->findClip(newId);
+                qint64 targetMs = c ? c->timelineInMs() : timelineMs;
                 setSelectedClipId(newId);
                 emit clipSelected(newId);
+                setPlayheadPosition(targetMs);
+                emit playheadSeekRequested(targetMs);
+                update();
             }
         }
+    } else if (selected == actAddAdjTrack) {
+        addAdjustmentTrack();
     } else if (selected == actAddVideoTrack) {
         addVideoTrack();
     } else if (selected == actAddAudioTrack) {
@@ -1635,12 +2019,26 @@ void TimelineWidget::showTrackContextMenu(qint64 trackId, const QPoint &globalPo
         "QMenu::item:selected { background-color: #1f293d; color: #58a6ff; }"
     );
 
+    QAction *actAddAdj = nullptr;
+    QAction *actAddSolid = nullptr;
+    QAction *actAddText = nullptr;
+    if (track->type() == TrackType::Adjustment) {
+        actAddAdj = menu.addAction("✨ Insertar Capa de Ajuste en el Cabezal (5s)");
+        menu.addSeparator();
+    } else if (track->type() == TrackType::Video) {
+        actAddAdj = menu.addAction("✨ Insertar Capa de Ajuste en nueva pista (5s)");
+        actAddSolid = menu.addAction("🎨 Insertar Clip de Color Sólido...");
+        actAddText = menu.addAction("🔤 Insertar Texto en el Cabezal (5s)");
+        menu.addSeparator();
+    }
+
     QAction *actRename = menu.addAction("✏️ Renombrar Pista...");
     QAction *actToggleLock = menu.addAction(track->isLocked() ? "🔓 Desbloquear Pista" : "🔒 Bloquear Pista");
 
+    QAction *actAddAdjTrack = menu.addAction("✨ Añadir Pista de Ajuste Arriba");
     QAction *actAddV = nullptr;
     QAction *actAddA = nullptr;
-    if (track->type() == TrackType::Video) {
+    if (track->type() == TrackType::Video || track->type() == TrackType::Adjustment) {
         actAddV = menu.addAction("➕ Añadir Pista de Video Arriba");
     } else {
         actAddA = menu.addAction("➕ Añadir Pista de Audio Abajo");
@@ -1652,7 +2050,43 @@ void TimelineWidget::showTrackContextMenu(qint64 trackId, const QPoint &globalPo
     QAction *chosen = menu.exec(globalPos);
     if (!chosen) return;
 
-    if (chosen == actRename) {
+    if (chosen == actAddAdj) {
+        qint64 newId = m_model->addAdjustmentClip(m_playheadPositionMs, 5000, trackId);
+        if (newId > 0) {
+            TimelineClip *c = m_model->findClip(newId);
+            qint64 targetMs = c ? c->timelineInMs() : m_playheadPositionMs;
+            setSelectedClipId(newId);
+            emit clipSelected(newId);
+            setPlayheadPosition(targetMs);
+            emit playheadSeekRequested(targetMs);
+            update();
+        }
+    } else if (chosen == actAddSolid) {
+        QColor chosenCol = QColorDialog::getColor(QColor("#1f6feb"), this, "Seleccionar Color Sólido");
+        if (chosenCol.isValid()) {
+            qint64 newId = m_model->addSolidColorClip(chosenCol, m_playheadPositionMs, 5000, trackId);
+            if (newId > 0) {
+                TimelineClip *c = m_model->findClip(newId);
+                qint64 targetMs = c ? c->timelineInMs() : m_playheadPositionMs;
+                setSelectedClipId(newId);
+                emit clipSelected(newId);
+                setPlayheadPosition(targetMs);
+                emit playheadSeekRequested(targetMs);
+                update();
+            }
+        }
+    } else if (chosen == actAddText) {
+        qint64 newId = m_model->addTextClip("Texto de ejemplo", m_playheadPositionMs, 5000, trackId);
+        if (newId > 0) {
+            TimelineClip *c = m_model->findClip(newId);
+            qint64 targetMs = c ? c->timelineInMs() : m_playheadPositionMs;
+            setSelectedClipId(newId);
+            emit clipSelected(newId);
+            setPlayheadPosition(targetMs);
+            emit playheadSeekRequested(targetMs);
+            update();
+        }
+    } else if (chosen == actRename) {
         bool ok = false;
         QString name = QInputDialog::getText(this, "Renombrar Pista", "Nuevo nombre de pista:", QLineEdit::Normal, track->name(), &ok);
         if (ok && !name.trimmed().isEmpty()) {
@@ -1663,6 +2097,8 @@ void TimelineWidget::showTrackContextMenu(qint64 trackId, const QPoint &globalPo
         track->setLocked(!track->isLocked());
         m_model->notifyChange();
         update();
+    } else if (chosen == actAddAdjTrack) {
+        addAdjustmentTrack();
     } else if (chosen == actAddV) {
         addVideoTrack();
     } else if (chosen == actAddA) {

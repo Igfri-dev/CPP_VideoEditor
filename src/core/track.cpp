@@ -16,8 +16,12 @@ TimelineTrack::TimelineTrack(qint64 id, const QString &name, TrackType type)
 
 bool TimelineTrack::canAcceptClipType(ClipType clipType) const
 {
-    if (m_type == TrackType::Video) {
-        return clipType == ClipType::Video || clipType == ClipType::Image || clipType == ClipType::Text;
+    if (m_type == TrackType::Adjustment) {
+        return clipType == ClipType::Adjustment;
+    } else if (m_type == TrackType::Video) {
+        return clipType == ClipType::Video || clipType == ClipType::Image ||
+               clipType == ClipType::Text || clipType == ClipType::Compound || 
+               clipType == ClipType::SolidColor;
     } else {
         return clipType == ClipType::Audio;
     }

@@ -13,8 +13,23 @@ QString clipTypeToString(ClipType type)
     case ClipType::Audio: return "Audio";
     case ClipType::Image: return "Imagen";
     case ClipType::Text:  return "Texto";
+    case ClipType::Adjustment: return "Capa de ajuste";
+    case ClipType::Compound:   return "Clip compuesto";
+    case ClipType::SolidColor: return "Color sólido";
     }
     return "Desconocido";
+}
+
+ClipType stringToClipType(const QString &str)
+{
+    QString s = str.trimmed();
+    if (s.compare("Audio", Qt::CaseInsensitive) == 0) return ClipType::Audio;
+    if (s.compare("Imagen", Qt::CaseInsensitive) == 0 || s.compare("Image", Qt::CaseInsensitive) == 0) return ClipType::Image;
+    if (s.compare("Texto", Qt::CaseInsensitive) == 0 || s.compare("Text", Qt::CaseInsensitive) == 0) return ClipType::Text;
+    if (s.compare("Adjustment", Qt::CaseInsensitive) == 0 || s.contains("ajuste", Qt::CaseInsensitive)) return ClipType::Adjustment;
+    if (s.compare("Compound", Qt::CaseInsensitive) == 0 || s.contains("compuesto", Qt::CaseInsensitive)) return ClipType::Compound;
+    if (s.compare("SolidColor", Qt::CaseInsensitive) == 0 || s.contains("sólido", Qt::CaseInsensitive) || s.contains("solido", Qt::CaseInsensitive)) return ClipType::SolidColor;
+    return ClipType::Video;
 }
 
 QList<VisualFilterInfo> allVisualFilters()
@@ -238,6 +253,21 @@ TimelineClip::TimelineClip(qint64 id, qint64 trackId, const QString &name, const
         m_sourceOutMs = 5000;
         m_textContent = name.isEmpty() ? "Texto de ejemplo" : name;
         break;
+    case ClipType::Adjustment:
+        m_color = QColor("#bc8cff"); // Violet/Magenta for Adjustment Layers
+        m_timelineOutMs = m_timelineInMs + 5000;
+        m_sourceDurationMs = 5000;
+        m_sourceOutMs = 5000;
+        break;
+    case ClipType::Compound:
+        m_color = QColor("#3fb950"); // Green/Teal for Nested/Compound Clips
+        break;
+    case ClipType::SolidColor:
+        m_color = QColor("#56d364"); // Solid Color
+        m_timelineOutMs = m_timelineInMs + 5000;
+        m_sourceDurationMs = 5000;
+        m_sourceOutMs = 5000;
+        break;
     }
 }
 
@@ -250,8 +280,95 @@ qint64 TimelineClip::mapTimelineToSourceMs(qint64 timelineMs) const
         return m_sourceOutMs;
     }
     const qint64 offsetOnTimeline = timelineMs - m_timelineInMs;
-    const qint64 sourceOffset = qRound64(offsetOnTimeline * m_speed);
+    qint64 sourceOffset = 0;
+    if (m_speedRamp.enabled) {
+        sourceOffset = m_speedRamp.calculateSourceOffset(offsetOnTimeline, m_speed);
+    } else {
+        sourceOffset = qRound64(offsetOnTimeline * m_speed);
+    }
     return m_sourceInMs + sourceOffset;
+}
+
+QPointF TimelineClip::positionAt(qint64 timelineMs) const
+{
+    if (hasMotionPath() && durationMs() > 0) {
+        return m_motionPath.evaluateAtTime(timelineMs, m_timelineInMs, durationMs());
+    }
+    if (m_animPosition.isAnimated()) {
+        const qint64 offset = timelineMs - m_timelineInMs;
+        return m_animPosition.valueAt(offset);
+    }
+    return QPointF(m_posX, m_posY);
+}
+
+double TimelineClip::posXAt(qint64 timelineMs) const
+{
+    return positionAt(timelineMs).x();
+}
+
+double TimelineClip::posYAt(qint64 timelineMs) const
+{
+    return positionAt(timelineMs).y();
+}
+
+double TimelineClip::scaleXAt(qint64 timelineMs) const
+{
+    if (m_animScaleX.isAnimated()) {
+        const qint64 offset = timelineMs - m_timelineInMs;
+        return m_animScaleX.valueAt(offset);
+    }
+    return m_scaleX;
+}
+
+double TimelineClip::scaleYAt(qint64 timelineMs) const
+{
+    if (m_animScaleY.isAnimated()) {
+        const qint64 offset = timelineMs - m_timelineInMs;
+        return m_animScaleY.valueAt(offset);
+    }
+    return m_scaleY;
+}
+
+double TimelineClip::scaleAt(qint64 timelineMs) const
+{
+    return scaleXAt(timelineMs);
+}
+
+double TimelineClip::rotationAt(qint64 timelineMs) const
+{
+    if (m_animRotation.isAnimated()) {
+        const qint64 offset = timelineMs - m_timelineInMs;
+        return m_animRotation.valueAt(offset);
+    }
+    return m_rotation;
+}
+
+float TimelineClip::timeOfDayAt(qint64 timelineMs) const
+{
+    if (m_animTimeOfDay.isAnimated()) {
+        const qint64 offset = timelineMs - m_timelineInMs;
+        return qBound(0.0f, m_animTimeOfDay.valueAt(offset), 1.0f);
+    }
+    return m_colorAdjustments.timeOfDay;
+}
+
+ColorAdjustments TimelineClip::colorAdjustmentsAt(qint64 timelineMs) const
+{
+    ColorAdjustments adj = m_colorAdjustments;
+    const qint64 offset = timelineMs - m_timelineInMs;
+    if (m_animTimeOfDay.isAnimated()) {
+        adj.timeOfDay = qBound(0.0f, m_animTimeOfDay.valueAt(offset), 1.0f);
+    }
+    if (m_animTimeOfDayIntensity.isAnimated()) {
+        adj.timeOfDayIntensity = qBound(0.0f, m_animTimeOfDayIntensity.valueAt(offset), 1.0f);
+    }
+    if (m_animBrightness.isAnimated()) {
+        adj.brightness = qBound(-100, m_animBrightness.valueAt(offset), 100);
+    }
+    if (m_animLuminosity.isAnimated()) {
+        adj.luminosity = qBound(-100, m_animLuminosity.valueAt(offset), 100);
+    }
+    return adj;
 }
 
 double TimelineClip::opacityAt(qint64 timelineMs) const
@@ -270,7 +387,8 @@ double TimelineClip::opacityAt(qint64 timelineMs) const
         const qint64 remaining = duration - offset;
         factor = qMin(factor, static_cast<double>(remaining) / static_cast<double>(m_fadeOutMs));
     }
-    return qBound(0.0, m_opacity * factor, 1.0);
+    double baseOp = m_animOpacity.isAnimated() ? m_animOpacity.valueAt(offset) : m_opacity;
+    return qBound(0.0, baseOp * factor, 1.0);
 }
 
 double TimelineClip::volumeAt(qint64 timelineMs) const
@@ -289,7 +407,8 @@ double TimelineClip::volumeAt(qint64 timelineMs) const
         const qint64 remaining = duration - offset;
         factor = qMin(factor, static_cast<double>(remaining) / static_cast<double>(m_fadeOutMs));
     }
-    return qBound(0.0, m_volume * factor, 2.0);
+    double baseVol = m_animVolume.isAnimated() ? m_animVolume.valueAt(offset) : m_volume;
+    return qBound(0.0, baseVol * factor, 2.0);
 }
 
 QImage TimelineClip::renderTextImage(const QSize &canvasSize) const
